@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { Plus, X, Terminal, Play, Square, Server, MonitorSmartphone, Settings2, Check } from '@lucide/vue'
-import { ConnectMaster, DisconnectMaster, ReadRegisters, WriteRegister } from '../wailsjs/go/main/App'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { Plus, X, Terminal, Server, MonitorSmartphone, Settings2, Check } from '@lucide/vue'
+import { ConnectMaster, DisconnectMaster, ReadRegisters, WriteRegister, WriteMultipleRegisters, StartSlave, StopSlave, GetSlaveData, UpdateSlaveData, ClearAllConnections } from '../wailsjs/go/main/App'
+import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
+import { formatRegisterValue, parseUserInput } from './lib/modbusFormatter'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -19,6 +21,7 @@ interface ModbusInstance {
   name: string
   type: 'master' | 'slave'
   status: 'connected' | 'disconnected'
+  hasError: boolean
   protocol: 'tcp' | 'rtu'
   tcpConfig: { ip: string, port: number }
   rtuConfig: { port: string, baudRate: number, dataBits: number, stopBits: number, parity: string }
@@ -39,6 +42,7 @@ const createDefaultInstance = (id: string, type: 'master' | 'slave'): ModbusInst
   name: `${type === 'master' ? 'Master' : 'Slave'} ${id}`,
   type,
   status: 'disconnected',
+  hasError: false,
   protocol: 'tcp',
   tcpConfig: { ip: '127.0.0.1', port: 502 },
   rtuConfig: { port: 'COM1', baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'None' },
@@ -78,6 +82,12 @@ const showLogDialog = ref(false)
 // Connection Setup temporary state
 const tempConnectionConfig = ref<any>({})
 
+// System Status
+const systemStatus = ref({ text: 'System Ready.', type: 'info' as 'info' | 'success' | 'error' })
+const setStatus = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
+  systemStatus.value = { text, type }
+}
+
 const openConnectionDialog = () => {
   if (!activeInstance.value) return
   // Clone current config to temp state
@@ -108,9 +118,26 @@ const startPolling = (inst: ModbusInstance) => {
         for(let i=0; i<res.length; i++) {
           inst.data[i] = res[i]
         }
+        setStatus(`[${inst.name}] Auto Read: ${inst.count} registers successfully.`, 'success')
+        inst.status = 'connected' // Recovered!
+        inst.hasError = false
       }
     } catch (e) {
-      console.error("Poll error on", inst.id, e)
+      setStatus(`[${inst.name}] Auto Read error: ${e}. Reconnecting...`, 'error')
+      inst.status = 'disconnected' // Reflect broken state in UI
+      inst.hasError = true
+      
+      // Attempt to re-establish the socket for the next polling cycle
+      try {
+        await DisconnectMaster(inst.id)
+        if (inst.protocol === 'tcp') {
+          await ConnectMaster(inst.id, 'tcp', `${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 0, 0, "", 0)
+        } else {
+          await ConnectMaster(inst.id, 'rtu', inst.rtuConfig.port, inst.rtuConfig.baudRate, inst.rtuConfig.dataBits, inst.rtuConfig.parity, inst.rtuConfig.stopBits)
+        }
+      } catch (reconnectErr) {
+        // Silent fail; next tick will just try again
+      }
     }
   }, inst.intervalMs || 1000)
   activeTimers.set(inst.id, timer)
@@ -127,21 +154,34 @@ const toggleAutoRead = (inst: ModbusInstance) => {
   inst.isAutoRead = !inst.isAutoRead
   if (inst.isAutoRead) {
     startPolling(inst)
+    setStatus(`[${inst.name}] Auto Read started.`, 'info')
   } else {
     stopPolling(inst.id)
+    setStatus(`[${inst.name}] Auto Read stopped.`, 'info')
   }
 }
 
 const readOnce = async (inst: ModbusInstance) => {
     try {
-      const res = await ReadRegisters(inst.id, inst.slaveId, inst.functionCode, inst.startAddress, inst.count)
-      if (res && res.length) {
-        for(let i=0; i<res.length; i++) {
-          inst.data[i] = res[i]
+      if (inst.type === 'master') {
+        const res = await ReadRegisters(inst.id, inst.slaveId, inst.functionCode, inst.startAddress, inst.count)
+        if (res && res.length) {
+          for(let i=0; i<res.length; i++) {
+            inst.data[i] = res[i]
+          }
+          setStatus(`[${inst.name}] Read ${inst.count} registers successfully.`, 'success')
+        }
+      } else {
+        const res = await GetSlaveData(inst.id, inst.startAddress, inst.count)
+        if (res && res.length) {
+          for(let i=0; i<res.length; i++) {
+            inst.data[i] = res[i]
+          }
+          setStatus(`[${inst.name}] Memory refreshed.`, 'success')
         }
       }
     } catch (e) {
-      console.error("Read error on", inst.id, e)
+      setStatus(`[${inst.name}] Read error: ${e}`, 'error')
     }
 }
 
@@ -150,33 +190,53 @@ const toggleConnection = async () => {
   const inst = activeInstance.value
   if (inst.status === 'connected') {
     try {
-      await DisconnectMaster(inst.id)
+      if (inst.type === 'master') {
+        await DisconnectMaster(inst.id)
+      } else {
+        await StopSlave(inst.id)
+      }
       inst.status = 'disconnected'
+      inst.hasError = false
       inst.isAutoRead = false
       stopPolling(inst.id)
+      setStatus(`[${inst.name}] Disconnected.`, 'info')
     } catch (e) {
-      console.error(e)
+      inst.hasError = true
+      setStatus(`[${inst.name}] Disconnect failed: ${e}`, 'error')
     }
   } else {
     try {
-      if (inst.protocol === 'tcp') {
-        await ConnectMaster(inst.id, 'tcp', `${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 0, 0, "", 0)
+      if (inst.type === 'master') {
+        if (inst.protocol === 'tcp') {
+          await ConnectMaster(inst.id, 'tcp', `${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 0, 0, "", 0)
+          setStatus(`[${inst.name}] Connected to TCP ${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 'success')
+        } else {
+          await ConnectMaster(inst.id, 'rtu', inst.rtuConfig.port, inst.rtuConfig.baudRate, inst.rtuConfig.dataBits, inst.rtuConfig.parity, inst.rtuConfig.stopBits)
+          setStatus(`[${inst.name}] Connected to RTU ${inst.rtuConfig.port}`, 'success')
+        }
       } else {
-        await ConnectMaster(inst.id, 'rtu', inst.rtuConfig.port, inst.rtuConfig.baudRate, inst.rtuConfig.dataBits, inst.rtuConfig.parity, inst.rtuConfig.stopBits)
+        // SLAVE LOGIC
+        if (inst.protocol === 'tcp') {
+          await StartSlave(inst.id, 'tcp', `${inst.tcpConfig.ip}:${inst.tcpConfig.port}`)
+          setStatus(`[${inst.name}] Listening on TCP ${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 'success')
+        } else {
+          await StartSlave(inst.id, 'rtu', inst.rtuConfig.port)
+          setStatus(`[${inst.name}] Listening on RTU ${inst.rtuConfig.port}`, 'success')
+        }
       }
       inst.status = 'connected'
-      readOnce(inst)
+      inst.hasError = false
     } catch (e) {
-      console.error(e)
-      alert("Connection failed: " + e)
+      inst.hasError = true
+      setStatus(`[${inst.name}] Connection failed: ${e}`, 'error')
     }
   }
 }
 
 // Write Dialog temporary state
-const writeTarget = ref({ address: 0, currentValue: 0, newValue: 0 })
+const writeTarget = ref({ address: 0, currentValue: '' as string | number, newValue: '' as string | number })
 
-const openWriteDialog = (address: number, currentValue: number) => {
+const openWriteDialog = (address: number, currentValue: string | number) => {
   // Only allow writing if it's a writable function code and we're connected (simulated)
   if (activeInstance.value?.functionCode === '02' || activeInstance.value?.functionCode === '04') {
     alert("Function code 02 and 04 are Read-Only.")
@@ -188,22 +248,125 @@ const openWriteDialog = (address: number, currentValue: number) => {
 
 const commitWrite = async () => {
   try {
-    const val = parseInt(String(writeTarget.value.newValue), 10)
-    await WriteRegister(activeInstance.value!.id, activeInstance.value!.slaveId, writeTarget.value.address, val)
-    console.log(`Writing ${val} to address ${writeTarget.value.address}`)
-    readOnce(activeInstance.value!)
+    const inst = activeInstance.value!
+    const parsedValues = parseUserInput(
+      String(writeTarget.value.newValue),
+      inst.dataType,
+      inst.format,
+      inst.byteOrder,
+      inst.functionCode
+    )
+    
+    if (inst.type === 'master') {
+      if (parsedValues.length === 1) {
+        await WriteRegister(inst.id, inst.slaveId, writeTarget.value.address, parsedValues[0])
+      } else {
+        await WriteMultipleRegisters(inst.id, inst.slaveId, writeTarget.value.address, parsedValues)
+      }
+    } else {
+      await UpdateSlaveData(inst.id, writeTarget.value.address, parsedValues)
+    }
+    setStatus(`[${inst.name}] Wrote to address ${writeTarget.value.address}.`, 'success')
+    readOnce(inst)
   } catch (e) {
-    alert("Write failed: " + e)
+    setStatus(`[${activeInstance.value!.name}] Write failed: ${e}`, 'error')
   }
   showWriteDialog.value = false
 }
 
+// Listen for external Master writing to our Server
+onMounted(() => {
+  // Always nuke existing connections on fresh load/refresh to prevent zombie ports
+  ClearAllConnections().catch(console.error)
+
+  // Restore state from localStorage
+  const savedState = localStorage.getItem('modbus_instances')
+  if (savedState) {
+    try {
+      const parsed = JSON.parse(savedState)
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        parsed.forEach((inst: any) => {
+          // Reset runtime states
+          inst.status = 'disconnected'
+          inst.isAutoRead = false
+          inst.hasError = false
+          // Initialize empty data array
+          inst.data = new Array(inst.count || 100).fill(0)
+        })
+        instances.value = parsed
+        activeTab.value = parsed[0].id
+      }
+    } catch (e) {
+      console.error('Failed to parse saved instances', e)
+    }
+  }
+
+  EventsOn('slave_write', (id: string, addr: number, args: number[]) => {
+    const inst = instances.value.find(i => i.id === id)
+    if (inst && inst.type === 'slave') {
+      // If the write falls within the currently displayed window, update the grid!
+      const start = inst.startAddress
+      const end = start + inst.count
+      let updated = false
+      for (let i = 0; i < args.length; i++) {
+        const targetAddr = addr + i
+        if (targetAddr >= start && targetAddr < end) {
+          inst.data[targetAddr - start] = args[i]
+          updated = true
+        }
+      }
+      if (updated) {
+        setStatus(`[${inst.name}] External Write to addr ${addr}.`, 'success')
+      }
+    }
+  })
+})
+
+onUnmounted(() => {
+  EventsOff('slave_write')
+})
+
+// Auto-save state to localStorage (debounced)
+let saveTimeout: any
+watch(instances, () => {
+  clearTimeout(saveTimeout)
+  saveTimeout = setTimeout(() => {
+    // Strip data arrays to save space
+    const toSave = instances.value.map(inst => ({ ...inst, data: [] }))
+    localStorage.setItem('modbus_instances', JSON.stringify(toSave))
+  }, 1000)
+}, { deep: true })
+
 // Instance Management
+const newInstanceName = ref('')
+const nameError = ref('')
+
+watch(showAddDialog, (val) => {
+  if (val) {
+    newInstanceName.value = ''
+    nameError.value = ''
+  }
+})
+
+watch(newInstanceName, () => {
+  if (nameError.value) nameError.value = ''
+})
+
 const addInstance = (type: 'master' | 'slave') => {
   const newId = String(nextId++)
-  instances.value.push(createDefaultInstance(newId, type))
+  const name = newInstanceName.value.trim() || `${type === 'master' ? 'Master' : 'Slave'} ${newId}`
+  
+  if (instances.value.some(inst => inst.name.toLowerCase() === name.toLowerCase())) {
+    nameError.value = 'A connection with this name already exists.'
+    return
+  }
+
+  const newInst = createDefaultInstance(newId, type)
+  newInst.name = name
+  instances.value.push(newInst)
   activeTab.value = newId
   showAddDialog.value = false
+  newInstanceName.value = '' // Reset
 }
 
 const removeInstance = (id: string, event: Event) => {
@@ -211,7 +374,14 @@ const removeInstance = (id: string, event: Event) => {
   if (instances.value.length === 1) return
   
   stopPolling(id)
-  DisconnectMaster(id).catch((e: any) => console.error(e))
+  const instToClose = instances.value.find(i => i.id === id)
+  if (instToClose) {
+    if (instToClose.type === 'master') {
+      DisconnectMaster(id).catch((e: any) => console.error(e))
+    } else {
+      StopSlave(id).catch((e: any) => console.error(e))
+    }
+  }
   
   const index = instances.value.findIndex(i => i.id === id)
   instances.value.splice(index, 1)
@@ -228,7 +398,9 @@ const getMatrixRows = (instance: ModbusInstance) => {
       const addr = rIndex * 10 + cIndex
       return {
         address: addr,
-        value: addr < instance.count ? instance.data[addr] : null // null for out of bounds
+        value: addr < instance.count 
+          ? formatRegisterValue(instance.data, addr, instance.dataType, instance.format, instance.byteOrder, instance.functionCode) 
+          : null // null for out of bounds
       }
     })
   })
@@ -243,39 +415,46 @@ const globalLogs = ref([
 
 <template>
   <TooltipProvider>
-    <div class="h-screen flex flex-col bg-muted/20 text-foreground font-sans overflow-hidden select-none relative">
+    <div class="flex flex-col h-screen bg-muted/20 text-foreground font-sans selection:bg-primary/20">
+    <!-- Main Content Layout -->
+    <div class="flex-1 flex overflow-hidden">
       
-      <!-- Native shadcn Tabs Component managing the whole app view -->
-      <Tabs v-model="activeTab" class="flex-1 flex flex-col overflow-hidden relative z-10">
-        
-        <!-- Row 1: Top Tab View -->
-        <div class="bg-muted/30 border-b border-border/50 flex items-end pl-2 pr-4 pt-2 shrink-0">
-          <div class="w-full overflow-x-auto no-scrollbar flex items-end">
-            <TabsList class="bg-transparent h-auto p-0 flex items-end justify-start gap-1 rounded-none border-b-0 relative">
-              <TransitionGroup name="tab-list">
-                <TabsTrigger 
-                  v-for="instance in instances" :key="instance.id" :value="instance.id"
-                  class="group relative flex items-center gap-2 px-4 py-2 text-[13px] transition-all duration-200 border border-b-0 rounded-t-lg outline-none cursor-pointer -mb-[1px] data-[state=active]:bg-card data-[state=active]:text-primary data-[state=active]:border-border/50 data-[state=active]:border-t-2 data-[state=active]:border-t-primary data-[state=active]:z-10 data-[state=inactive]:border-transparent data-[state=inactive]:bg-transparent data-[state=inactive]:text-muted-foreground hover:data-[state=inactive]:bg-muted/60"
-                >
-                  <MonitorSmartphone v-if="instance.type === 'master'" class="w-3.5 h-3.5 shrink-0 transition-colors" :class="activeTab === instance.id ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground/70'" />
-                  <Server v-else class="w-3.5 h-3.5 shrink-0 transition-colors" :class="activeTab === instance.id ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground/70'" />
+      <!-- Main Work Area -->
+      <main class="flex-1 flex flex-col min-w-0">
+        <Tabs v-model="activeTab" class="flex-1 flex flex-col overflow-hidden relative z-10">
+          
+          <!-- Row 1: Top Tab View -->
+          <div class="flex items-end px-4 pt-3 border-b border-border z-10 shrink-0">
+            <div class="w-full overflow-x-auto no-scrollbar flex items-end">
+              <TabsList class="bg-transparent h-auto p-0 flex items-end justify-start gap-1 rounded-none border-0">
+                  <TabsTrigger 
+                    v-for="instance in instances" :key="instance.id" :value="instance.id"
+                    class="group relative flex items-center gap-2 px-4 py-2 text-[13px] transition-all duration-200 border border-b-0 rounded-t-lg outline-none cursor-pointer -mb-[1px] data-[state=active]:bg-card data-[state=active]:text-primary data-[state=active]:border-border data-[state=active]:border-t-2 data-[state=active]:border-t-primary data-[state=active]:z-10 data-[state=inactive]:border-transparent data-[state=inactive]:bg-transparent data-[state=inactive]:text-muted-foreground hover:data-[state=inactive]:bg-muted/60"
+                  >
+                  <!-- Three-color Status Light -->
+                  <div class="h-2 w-2 rounded-full shrink-0 transition-all duration-300" 
+                       :class="{
+                         'bg-muted-foreground/30': instance.status === 'disconnected' && !instance.hasError,
+                         'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]': instance.status === 'connected' && !instance.hasError,
+                         'bg-destructive shadow-[0_0_6px_rgba(239,68,68,0.5)]': instance.hasError
+                       }">
+                  </div>
                   
                   <span class="font-medium tracking-wide max-w-[140px] truncate select-none transition-colors" :class="activeTab === instance.id ? 'text-foreground' : ''">{{ instance.name }}</span>
                   
                   <div 
                     v-if="instances.length > 1"
                     @click.stop="removeInstance(instance.id, $event)"
-                    class="w-4 h-4 ml-1.5 shrink-0 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-destructive/15 hover:text-destructive transition-all duration-200 scale-90 group-hover:scale-100"
+                    class="w-4 h-4 ml-1.5 shrink-0 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-destructive/15 hover:text-destructive transition-colors duration-200"
                     title="Close Connection"
                   >
                     <X class="w-3 h-3" />
                   </div>
                   <div v-else class="w-4 h-4 ml-1.5 shrink-0"></div>
                 </TabsTrigger>
-              </TransitionGroup>
 
-              <!-- Add Button sitting natively as a pseudo-tab right next to the last tab -->
-              <div class="flex items-center justify-center h-full pb-1.5 pl-1.5 pr-4 z-10 transition-all duration-300">
+              <!-- Add Button -->
+              <div class="flex items-center justify-center h-full pb-1 pl-1 pr-4 z-10 transition-all duration-300">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button variant="ghost" size="icon" @click="showAddDialog = true" class="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted/60 shrink-0 group">
@@ -291,74 +470,65 @@ const globalLogs = ref([
           </div>
         </div>
 
-        <!-- Render active tab content natively through shadcn TabsContent -->
-        <TabsContent 
-          v-for="instance in instances" 
-          :key="instance.id" 
-          :value="instance.id" 
-          class="flex-1 flex flex-col min-h-0 m-0 focus-visible:outline-none bg-card"
-        >
-          
-          <!-- Row 2: Master 配置信息一行 (Master Configuration) -->
-          <div class="px-5 py-2.5 border-b border-border/50 bg-card flex flex-wrap items-center justify-between gap-4 shrink-0 shadow-sm z-20">
+        <!-- Render active tab content -->
+          <TabsContent 
+            v-for="instance in instances" 
+            :key="instance.id" 
+            :value="instance.id" 
+            class="flex-1 flex flex-col min-h-0 m-0 outline-none bg-card"
+          >
+            
+            <!-- Row 2: Master 配置信息一行 (Master Configuration) -->
+            <div class="px-6 py-3 border-b border-border flex items-center justify-between gap-4 shrink-0 bg-card">
             <div class="flex items-center gap-3 shrink-0">
-              <!-- 身份与连接信息常驻 -->
               <h2 class="text-sm font-semibold flex items-center gap-2">
                 <span class="opacity-80">{{ instance.type === 'master' ? 'Master' : 'Slave' }}</span>
                 <span class="text-muted-foreground font-normal">•</span> 
                 <span class="font-mono text-[13px] text-foreground">{{ getConnectionInfoText(instance) }}</span>
               </h2>
 
-              <!-- 连接状态指示灯 & 连接断开按钮 -->
               <Button 
+                variant="outline"
                 size="sm" 
-                class="w-28 transition-colors ml-2"
-                :variant="instance.status === 'connected' ? 'destructive' : 'default'"
+                class="min-w-[110px] transition-colors ml-2"
                 @click="toggleConnection"
               >
-                <div 
-                  class="h-2 w-2 rounded-full mr-2 transition-colors" 
-                  :class="instance.status === 'connected' ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.8)]' : 'bg-primary-foreground/40'"
-                ></div>
                 {{ instance.status === 'connected' ? 'Disconnect' : 'Connect' }}
               </Button>
 
-              <!-- 设置按钮 (连接中禁用) -->
-              <Button variant="outline" size="sm" @click="openConnectionDialog" :disabled="instance.status === 'connected'">
-                <Settings2 class="w-4 h-4 mr-2" /> Setup...
+              <Button variant="outline" size="sm" class="min-w-[90px]" @click="openConnectionDialog" :disabled="instance.status === 'connected'">
+                <Settings2 class="w-4 h-4 mr-2 text-muted-foreground" /> Setup
               </Button>
             </div>
 
-            <!-- Right Side: Read Action Buttons (Moved to Master Row) -->
             <div class="flex items-center gap-3 shrink-0 ml-auto">
               <Button 
+                variant="outline"
                 size="sm"
-                class="w-32 transition-colors" 
-                :variant="instance.isAutoRead ? 'destructive' : 'outline'"
+                class="min-w-[130px] transition-colors" 
                 @click="toggleAutoRead(instance)"
                 :disabled="instance.status !== 'connected'"
               >
-                <Square v-if="instance.isAutoRead" class="w-4 h-4 mr-2 fill-current shrink-0" />
-                <Play v-else class="w-4 h-4 mr-2 fill-current shrink-0" />
                 {{ instance.isAutoRead ? 'Stop Auto Read' : 'Auto Read' }}
               </Button>
               
               <Button 
                 variant="outline"
                 size="sm"
+                class="min-w-[100px]"
                 :disabled="instance.status !== 'connected'"
                 @click="readOnce(instance)"
               >
                 Read Once
               </Button>
             </div>
-          </div>
+            </div>
 
-          <!-- Row 3: 采集配置一行 (Collection Configuration) -->
-          <div class="px-5 py-3.5 border-b border-border/50 bg-muted/10 flex flex-wrap items-center justify-between gap-4 z-10 shrink-0">
-            
-            <!-- Left Side: Parameter Groups -->
-            <div class="flex flex-wrap items-center gap-y-4 gap-x-8">
+            <!-- Row 3: 采集配置一行 (Collection Configuration) -->
+            <div class="px-6 py-3 border-b border-border flex flex-wrap items-center justify-between gap-4 shrink-0">
+              
+              <!-- Left Side: Parameter Groups -->
+              <div class="flex flex-wrap items-center gap-y-4 gap-x-8">
               
               <!-- Group 1: Addressing -->
               <div class="flex items-center gap-3 shrink-0">
@@ -439,67 +609,83 @@ const globalLogs = ref([
                   <Input v-model="instance.intervalMs" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" />
                 </div>
               </div>
-
+              </div>
             </div>
-          </div>
 
-          <!-- Row 4: Data Matrix View (数据区域一行) -->
-          <div class="flex-1 p-4 md:p-6 min-h-0 overflow-hidden">
-            <ScrollArea class="h-full w-full rounded-2xl ring-1 ring-foreground/10 bg-card/90 backdrop-blur-2xl shadow-xl">
-              <Table class="w-full text-sm">
-                <TableHeader class="bg-muted/30 sticky top-0 z-10 border-b border-border/50 backdrop-blur-md">
-                  <TableRow class="hover:bg-transparent border-none">
-                    <TableHead class="w-24 text-center border-r font-bold text-foreground">Address</TableHead>
-                    <TableHead v-for="i in 10" :key="i" class="text-center font-bold text-foreground w-[9%]">
-                      +{{ i - 1 }}
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  <TableRow 
-                    v-for="(row, rIdx) in getMatrixRows(instance)" 
-                    :key="rIdx"
-                    class="transition-colors border-border/50"
-                    :class="{ 'bg-muted/20': rIdx % 2 !== 0 }"
-                  >
-                    <!-- Base Address Column -->
-                    <TableCell class="font-mono text-primary font-semibold text-center border-r bg-muted/10">
-                      {{ instance.startAddress + rIdx * 10 }}
-                    </TableCell>
-                    
-                    <!-- Data Cells -->
-                    <TableCell v-for="(cell, cIdx) in row" :key="cIdx" class="p-1">
-                      <Tooltip v-if="cell.value !== null">
-                        <TooltipTrigger asChild>
-                          <button 
-                            @click="openWriteDialog(instance.startAddress + rIdx * 10 + cIdx, cell.value)"
-                            class="w-full h-8 font-mono text-center rounded bg-transparent hover:bg-muted focus:bg-primary/10 focus:text-primary focus:ring-1 focus:ring-primary/50 transition-all text-foreground"
-                          >
-                            {{ cell.value }}
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>Click to write to address <span class="font-mono text-primary">{{ instance.startAddress + rIdx * 10 + cIdx }}</span></p>
-                        </TooltipContent>
-                      </Tooltip>
-                      <div v-else class="w-full h-8 bg-transparent"></div>
-                    </TableCell>
-                  </TableRow>
-                </TableBody>
-              </Table>
-              <ScrollBar orientation="horizontal" />
-            </ScrollArea>
-          </div>
-        </TabsContent>
-        
-      </Tabs>
+            <!-- Row 4: Data Matrix (Matrix Display) -->
+            <div class="flex-1 p-6 relative flex flex-col min-h-0">
+              <div class="rounded-md border border-border flex-1 overflow-hidden flex flex-col bg-background">
+                <!-- Table Content with sticky header -->
+                <div class="flex-1 overflow-auto relative">
+                  <Table class="w-full text-sm">
+                    <TableHeader class="bg-muted/30 sticky top-0 z-10">
+                      <TableRow class="hover:bg-transparent border-none">
+                        <TableHead class="w-24 text-center border-b border-r border-border font-bold text-foreground">Address</TableHead>
+                        <TableHead v-for="i in 10" :key="i" class="text-center font-bold text-foreground w-[9%] border-b border-r border-border">
+                          {{ i - 1 }}
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow 
+                        v-for="(row, rIdx) in getMatrixRows(instance)" 
+                        :key="rIdx"
+                        class="transition-colors duration-150 border-none"
+                        :class="{ 'bg-muted/10': rIdx % 2 !== 0 }"
+                      >
+                        <!-- Base Address Column -->
+                        <TableCell class="font-mono text-primary font-semibold text-center border-b border-r border-border bg-muted/10">
+                          {{ instance.startAddress + rIdx * 10 }}
+                        </TableCell>
+                        
+                        <!-- Data Cells -->
+                        <TableCell v-for="(cell, cIdx) in row" :key="cIdx" class="p-0 border-b border-r border-border">
+                          <Tooltip v-if="cell.value !== null">
+                            <TooltipTrigger asChild>
+                              <button 
+                                @click="openWriteDialog(instance.startAddress + rIdx * 10 + cIdx, cell.value)"
+                                class="w-full h-8 font-mono text-center rounded-none bg-transparent hover:bg-muted/50 focus:bg-primary/10 focus:text-primary focus:ring-1 focus:ring-primary/50 focus:z-10 relative transition-colors text-foreground"
+                              >
+                                {{ cell.value }}
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>Click to write to address <span class="font-mono text-primary">{{ instance.startAddress + rIdx * 10 + cIdx }}</span></p>
+                            </TooltipContent>
+                          </Tooltip>
+                          <div v-else class="w-full h-8 bg-muted/5"></div>
+                        </TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+        </Tabs>
+      </main>
+    </div>
 
       <!-- Bottom Status Bar -->
-      <footer class="h-10 bg-card/80 backdrop-blur-xl border-t border-border/50 flex items-center justify-between px-4 z-30 shrink-0">
+      <footer class="h-10 bg-card border-t border-border flex items-center justify-between px-4 shrink-0 text-xs">
         <div class="flex items-center gap-4 text-xs">
-          <span class="text-muted-foreground font-medium flex items-center gap-2">
-            <div class="h-1.5 w-1.5 rounded-full bg-primary/50 animate-pulse"></div>
-            System Ready.
+          <span 
+            class="font-medium flex items-center gap-2"
+            :class="{
+              'text-muted-foreground': systemStatus.type === 'info',
+              'text-emerald-500': systemStatus.type === 'success',
+              'text-destructive': systemStatus.type === 'error'
+            }"
+          >
+            <div 
+              class="h-1.5 w-1.5 rounded-full"
+              :class="{
+                'bg-primary/50 animate-pulse': systemStatus.type === 'info',
+                'bg-emerald-500': systemStatus.type === 'success',
+                'bg-destructive': systemStatus.type === 'error'
+              }"
+            ></div>
+            {{ systemStatus.text }}
           </span>
         </div>
         
@@ -518,23 +704,38 @@ const globalLogs = ref([
               Choose the type of Modbus instance you want to create.
             </DialogDescription>
           </DialogHeader>
-          <div class="grid grid-cols-2 gap-4 py-4">
-            <Button 
-              variant="outline" 
-              class="h-24 flex flex-col items-center justify-center gap-2 hover:border-primary hover:text-primary transition-colors"
-              @click="addInstance('master')"
-            >
-              <MonitorSmartphone class="w-8 h-8" />
-              <span class="font-semibold">Master (Client)</span>
-            </Button>
-            <Button 
-              variant="outline" 
-              class="h-24 flex flex-col items-center justify-center gap-2 hover:border-primary hover:text-primary transition-colors"
-              @click="addInstance('slave')"
-            >
-              <Server class="w-8 h-8" />
-              <span class="font-semibold">Slave (Server)</span>
-            </Button>
+          <div class="grid gap-4 py-4">
+            <div class="space-y-2 mb-2">
+              <Label :class="{ 'text-destructive': nameError }">Connection Name</Label>
+              <Input 
+                v-model="newInstanceName" 
+                placeholder="e.g. Pump Station 1 (Optional)" 
+                autofocus 
+                @keyup.enter="addInstance('master')" 
+                :class="{ 'border-destructive focus-visible:ring-destructive': nameError }"
+              />
+              <p v-if="nameError" class="text-[11px] font-medium text-destructive mt-1">{{ nameError }}</p>
+            </div>
+            
+            <Label class="text-muted-foreground">Select Role to Create</Label>
+            <div class="grid grid-cols-2 gap-4">
+              <Button 
+                variant="outline" 
+                class="h-24 flex flex-col items-center justify-center gap-2 hover:border-primary hover:text-primary transition-colors"
+                @click="addInstance('master')"
+              >
+                <MonitorSmartphone class="w-8 h-8" />
+                <span class="font-semibold">Master (Client)</span>
+              </Button>
+              <Button 
+                variant="outline" 
+                class="h-24 flex flex-col items-center justify-center gap-2 hover:border-primary hover:text-primary transition-colors"
+                @click="addInstance('slave')"
+              >
+                <Server class="w-8 h-8" />
+                <span class="font-semibold">Slave (Server)</span>
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -638,28 +839,10 @@ const globalLogs = ref([
           </ScrollArea>
         </DialogContent>
       </Dialog>
-
     </div>
   </TooltipProvider>
 </template>
 
 <style>
 /* No custom scrollbars needed */
-
-/* Vue Transition Group Animations for Tabs */
-.tab-list-move,
-.tab-list-enter-active,
-.tab-list-leave-active {
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.tab-list-enter-from,
-.tab-list-leave-to {
-  opacity: 0;
-  transform: translateY(10px) scale(0.95);
-}
-
-.tab-list-leave-active {
-  position: absolute;
-}
 </style>

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check": "vue-tsc --noEmit && cd .. && go vet ./..."
   },
   "dependencies": {
     "@lucide/vue": "^1.23.0",
@@ -15,6 +16,8 @@
     "@vueuse/core": "^14.3.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "pinia": "^3.0.4",
+    "pinia-plugin-persistedstate": "^4.7.1",
     "reka-ui": "^2.10.1",
     "shadcn-vue": "^2.7.4",
     "tailwind-merge": "^3.6.0",
