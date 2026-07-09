@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import { Plus, X, Terminal, Play, Square, Activity, Server, MonitorSmartphone, Settings2, Check } from '@lucide/vue'
+import { ref, computed } from 'vue'
+import { Plus, X, Terminal, Play, Square, Server, MonitorSmartphone, Settings2, Check } from '@lucide/vue'
+import { ConnectMaster, DisconnectMaster, ReadRegisters, WriteRegister } from '../wailsjs/go/main/App'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,10 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
-import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { Card } from '@/components/ui/card'
 
 // Types
 interface ModbusInstance {
@@ -33,6 +31,7 @@ interface ModbusInstance {
   byteOrder: string
   intervalMs: number
   isAutoRead: boolean
+  data: number[]
 }
 
 const createDefaultInstance = (id: string, type: 'master' | 'slave'): ModbusInstance => ({
@@ -52,6 +51,7 @@ const createDefaultInstance = (id: string, type: 'master' | 'slave'): ModbusInst
   byteOrder: 'ABCD',
   intervalMs: 1000,
   isAutoRead: false,
+  data: Array(100).fill(0),
 })
 
 const instances = ref<ModbusInstance[]>([
@@ -63,13 +63,11 @@ let nextId = 2
 
 const activeInstance = computed(() => instances.value.find(i => i.id === activeTab.value))
 
-// Dynamic connection info badge
-const connectionInfoText = computed(() => {
-  if (!activeInstance.value) return 'Not Configured'
-  const inst = activeInstance.value
+// Dynamic connection info text
+const getConnectionInfoText = (inst: ModbusInstance) => {
   if (inst.protocol === 'tcp') return `TCP ${inst.tcpConfig.ip}:${inst.tcpConfig.port}`
   return `RTU ${inst.rtuConfig.port} @ ${inst.rtuConfig.baudRate}`
-})
+}
 
 // Dialog States
 const showAddDialog = ref(false)
@@ -99,13 +97,79 @@ const saveConnectionConfig = () => {
   showConnectionDialog.value = false
 }
 
-const toggleConnection = () => {
-  if (!activeInstance.value) return
-  if (activeInstance.value.status === 'connected') {
-    activeInstance.value.status = 'disconnected'
-    activeInstance.value.isAutoRead = false
+const activeTimers = new Map<string, any>()
+
+const startPolling = (inst: ModbusInstance) => {
+  stopPolling(inst.id)
+  const timer = setInterval(async () => {
+    try {
+      const res = await ReadRegisters(inst.id, inst.slaveId, inst.functionCode, inst.startAddress, inst.count)
+      if (res && res.length) {
+        for(let i=0; i<res.length; i++) {
+          inst.data[i] = res[i]
+        }
+      }
+    } catch (e) {
+      console.error("Poll error on", inst.id, e)
+    }
+  }, inst.intervalMs || 1000)
+  activeTimers.set(inst.id, timer)
+}
+
+const stopPolling = (id: string) => {
+  if (activeTimers.has(id)) {
+    clearInterval(activeTimers.get(id))
+    activeTimers.delete(id)
+  }
+}
+
+const toggleAutoRead = (inst: ModbusInstance) => {
+  inst.isAutoRead = !inst.isAutoRead
+  if (inst.isAutoRead) {
+    startPolling(inst)
   } else {
-    activeInstance.value.status = 'connected'
+    stopPolling(inst.id)
+  }
+}
+
+const readOnce = async (inst: ModbusInstance) => {
+    try {
+      const res = await ReadRegisters(inst.id, inst.slaveId, inst.functionCode, inst.startAddress, inst.count)
+      if (res && res.length) {
+        for(let i=0; i<res.length; i++) {
+          inst.data[i] = res[i]
+        }
+      }
+    } catch (e) {
+      console.error("Read error on", inst.id, e)
+    }
+}
+
+const toggleConnection = async () => {
+  if (!activeInstance.value) return
+  const inst = activeInstance.value
+  if (inst.status === 'connected') {
+    try {
+      await DisconnectMaster(inst.id)
+      inst.status = 'disconnected'
+      inst.isAutoRead = false
+      stopPolling(inst.id)
+    } catch (e) {
+      console.error(e)
+    }
+  } else {
+    try {
+      if (inst.protocol === 'tcp') {
+        await ConnectMaster(inst.id, 'tcp', `${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 0, 0, "", 0)
+      } else {
+        await ConnectMaster(inst.id, 'rtu', inst.rtuConfig.port, inst.rtuConfig.baudRate, inst.rtuConfig.dataBits, inst.rtuConfig.parity, inst.rtuConfig.stopBits)
+      }
+      inst.status = 'connected'
+      readOnce(inst)
+    } catch (e) {
+      console.error(e)
+      alert("Connection failed: " + e)
+    }
   }
 }
 
@@ -122,9 +186,15 @@ const openWriteDialog = (address: number, currentValue: number) => {
   showWriteDialog.value = true
 }
 
-const commitWrite = () => {
-  // In real app, call Wails backend here
-  console.log(`Writing ${writeTarget.value.newValue} to address ${writeTarget.value.address}`)
+const commitWrite = async () => {
+  try {
+    const val = parseInt(String(writeTarget.value.newValue), 10)
+    await WriteRegister(activeInstance.value!.id, activeInstance.value!.slaveId, writeTarget.value.address, val)
+    console.log(`Writing ${val} to address ${writeTarget.value.address}`)
+    readOnce(activeInstance.value!)
+  } catch (e) {
+    alert("Write failed: " + e)
+  }
   showWriteDialog.value = false
 }
 
@@ -139,6 +209,10 @@ const addInstance = (type: 'master' | 'slave') => {
 const removeInstance = (id: string, event: Event) => {
   event.stopPropagation()
   if (instances.value.length === 1) return
+  
+  stopPolling(id)
+  DisconnectMaster(id).catch((e: any) => console.error(e))
+  
   const index = instances.value.findIndex(i => i.id === id)
   instances.value.splice(index, 1)
   if (activeTab.value === id) {
@@ -154,7 +228,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
       const addr = rIndex * 10 + cIndex
       return {
         address: addr,
-        value: addr < instance.count ? 0 : null // null for out of bounds
+        value: addr < instance.count ? instance.data[addr] : null // null for out of bounds
       }
     })
   })
@@ -175,35 +249,37 @@ const globalLogs = ref([
       <Tabs v-model="activeTab" class="flex-1 flex flex-col overflow-hidden relative z-10">
         
         <!-- Row 1: Top Tab View -->
-        <div class="bg-card/80 backdrop-blur-xl border-b border-border/50 flex items-end pl-3 pr-4 pt-3 shrink-0">
+        <div class="bg-muted/30 border-b border-border/50 flex items-end pl-2 pr-4 pt-2 shrink-0">
           <div class="w-full overflow-x-auto no-scrollbar flex items-end">
-            <TabsList class="bg-transparent h-auto p-0 flex items-end justify-start gap-1.5 rounded-none border-b-0">
-              <TabsTrigger 
-                v-for="instance in instances" :key="instance.id" :value="instance.id"
-                class="group flex items-center gap-2 px-5 py-2.5 text-sm transition-all duration-300 border border-b-0 rounded-t-xl outline-none data-[state=active]:bg-card/60 data-[state=active]:backdrop-blur-md data-[state=active]:text-foreground data-[state=active]:border-border/50 data-[state=active]:shadow-sm data-[state=active]:z-10 data-[state=inactive]:bg-transparent data-[state=inactive]:border-transparent data-[state=inactive]:text-muted-foreground hover:data-[state=inactive]:bg-muted/50 cursor-pointer"
-              >
-                <MonitorSmartphone v-if="instance.type === 'master'" class="w-4 h-4 shrink-0" :class="activeTab === instance.id ? 'text-primary' : 'text-muted-foreground'" />
-                <Server v-else class="w-4 h-4 shrink-0" :class="activeTab === instance.id ? 'text-primary' : 'text-muted-foreground'" />
-                
-                <span class="font-medium tracking-wide max-w-[140px] truncate select-none">{{ instance.name }}</span>
-                
-                <div 
-                  v-if="instances.length > 1"
-                  @click.stop="removeInstance(instance.id, $event)"
-                  class="w-5 h-5 ml-1 shrink-0 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all"
-                  title="Close Connection"
+            <TabsList class="bg-transparent h-auto p-0 flex items-end justify-start gap-1 rounded-none border-b-0 relative">
+              <TransitionGroup name="tab-list">
+                <TabsTrigger 
+                  v-for="instance in instances" :key="instance.id" :value="instance.id"
+                  class="group relative flex items-center gap-2 px-4 py-2 text-[13px] transition-all duration-200 border border-b-0 rounded-t-lg outline-none cursor-pointer -mb-[1px] data-[state=active]:bg-card data-[state=active]:text-primary data-[state=active]:border-border/50 data-[state=active]:border-t-2 data-[state=active]:border-t-primary data-[state=active]:z-10 data-[state=inactive]:border-transparent data-[state=inactive]:bg-transparent data-[state=inactive]:text-muted-foreground hover:data-[state=inactive]:bg-muted/60"
                 >
-                  <X class="w-3.5 h-3.5" />
-                </div>
-                <div v-else class="w-5 h-5 ml-1 shrink-0"></div>
-              </TabsTrigger>
+                  <MonitorSmartphone v-if="instance.type === 'master'" class="w-3.5 h-3.5 shrink-0 transition-colors" :class="activeTab === instance.id ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground/70'" />
+                  <Server v-else class="w-3.5 h-3.5 shrink-0 transition-colors" :class="activeTab === instance.id ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground/70'" />
+                  
+                  <span class="font-medium tracking-wide max-w-[140px] truncate select-none transition-colors" :class="activeTab === instance.id ? 'text-foreground' : ''">{{ instance.name }}</span>
+                  
+                  <div 
+                    v-if="instances.length > 1"
+                    @click.stop="removeInstance(instance.id, $event)"
+                    class="w-4 h-4 ml-1.5 shrink-0 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-destructive/15 hover:text-destructive transition-all duration-200 scale-90 group-hover:scale-100"
+                    title="Close Connection"
+                  >
+                    <X class="w-3 h-3" />
+                  </div>
+                  <div v-else class="w-4 h-4 ml-1.5 shrink-0"></div>
+                </TabsTrigger>
+              </TransitionGroup>
 
               <!-- Add Button sitting natively as a pseudo-tab right next to the last tab -->
-              <div class="flex items-center justify-center h-full pb-1 pl-1 pr-4">
+              <div class="flex items-center justify-center h-full pb-1.5 pl-1.5 pr-4 z-10 transition-all duration-300">
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant="ghost" size="icon" @click="showAddDialog = true" class="h-8 w-8 text-muted-foreground hover:text-foreground shrink-0">
-                      <Plus class="w-4 h-4" />
+                    <Button variant="ghost" size="icon" @click="showAddDialog = true" class="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted/60 shrink-0 group">
+                      <Plus class="w-3.5 h-3.5 transition-transform duration-500 ease-out group-hover:rotate-90 group-hover:text-primary group-hover:scale-110" />
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
@@ -220,51 +296,58 @@ const globalLogs = ref([
           v-for="instance in instances" 
           :key="instance.id" 
           :value="instance.id" 
-          class="flex-1 flex flex-col min-h-0 m-0 focus-visible:outline-none"
+          class="flex-1 flex flex-col min-h-0 m-0 focus-visible:outline-none bg-card"
         >
           
           <!-- Row 2: Master 配置信息一行 (Master Configuration) -->
-          <div class="px-5 py-3 border-b border-border/50 bg-card/60 backdrop-blur-md flex flex-wrap items-center justify-between gap-4 shrink-0 shadow-[0_4px_20px_-10px_rgba(0,0,0,0.05)] z-20">
+          <div class="px-5 py-2.5 border-b border-border/50 bg-card flex flex-wrap items-center justify-between gap-4 shrink-0 shadow-sm z-20">
             <div class="flex items-center gap-3 shrink-0">
+              <!-- 身份与连接信息常驻 -->
               <h2 class="text-sm font-semibold flex items-center gap-2">
                 <span class="opacity-80">{{ instance.type === 'master' ? 'Master' : 'Slave' }}</span>
                 <span class="text-muted-foreground font-normal">•</span> 
-                
-                <button 
-                  @click="toggleConnection"
-                  class="flex items-center gap-1.5 font-mono text-[13px] px-1.5 py-0.5 rounded transition-colors group"
-                  :class="instance.status === 'connected' ? 'text-foreground hover:bg-emerald-500/10' : 'text-muted-foreground hover:bg-muted'"
-                  title="Click to toggle connection"
-                >
-                  <div 
-                    class="h-2 w-2 rounded-full transition-colors" 
-                    :class="instance.status === 'connected' ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-muted-foreground/40'"
-                  ></div>
-                  <span>{{ instance.status === 'connected' ? connectionInfoText : 'Disconnected' }}</span>
-                </button>
+                <span class="font-mono text-[13px] text-foreground">{{ getConnectionInfoText(instance) }}</span>
               </h2>
-              <Button variant="outline" size="sm" class="h-7 text-xs bg-background shadow-sm shrink-0" @click="openConnectionDialog">
-                <Settings2 class="w-3.5 h-3.5 mr-1.5" /> Setup Connection...
+
+              <!-- 连接状态指示灯 & 连接断开按钮 -->
+              <Button 
+                size="sm" 
+                class="w-28 transition-colors ml-2"
+                :variant="instance.status === 'connected' ? 'destructive' : 'default'"
+                @click="toggleConnection"
+              >
+                <div 
+                  class="h-2 w-2 rounded-full mr-2 transition-colors" 
+                  :class="instance.status === 'connected' ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.8)]' : 'bg-primary-foreground/40'"
+                ></div>
+                {{ instance.status === 'connected' ? 'Disconnect' : 'Connect' }}
+              </Button>
+
+              <!-- 设置按钮 (连接中禁用) -->
+              <Button variant="outline" size="sm" @click="openConnectionDialog" :disabled="instance.status === 'connected'">
+                <Settings2 class="w-4 h-4 mr-2" /> Setup...
               </Button>
             </div>
 
             <!-- Right Side: Read Action Buttons (Moved to Master Row) -->
             <div class="flex items-center gap-3 shrink-0 ml-auto">
               <Button 
-                class="h-8 transition-all px-4 font-semibold text-xs shadow-sm shrink-0" 
+                size="sm"
+                class="w-32 transition-colors" 
                 :variant="instance.isAutoRead ? 'destructive' : 'outline'"
-                @click="instance.isAutoRead = !instance.isAutoRead"
+                @click="toggleAutoRead(instance)"
                 :disabled="instance.status !== 'connected'"
               >
-                <Square v-if="instance.isAutoRead" class="w-3.5 h-3.5 mr-1.5 fill-current shrink-0" />
-                <Play v-else class="w-3.5 h-3.5 mr-1.5 fill-current shrink-0" />
+                <Square v-if="instance.isAutoRead" class="w-4 h-4 mr-2 fill-current shrink-0" />
+                <Play v-else class="w-4 h-4 mr-2 fill-current shrink-0" />
                 {{ instance.isAutoRead ? 'Stop Auto Read' : 'Auto Read' }}
               </Button>
               
               <Button 
                 variant="outline"
-                class="h-8 font-semibold px-6 text-xs shadow-sm shrink-0"
+                size="sm"
                 :disabled="instance.status !== 'connected'"
+                @click="readOnce(instance)"
               >
                 Read Once
               </Button>
@@ -272,7 +355,7 @@ const globalLogs = ref([
           </div>
 
           <!-- Row 3: 采集配置一行 (Collection Configuration) -->
-          <div class="px-5 py-4 border-b border-border/50 bg-card/40 backdrop-blur-sm flex flex-wrap items-center justify-between gap-4 shadow-sm z-10 shrink-0">
+          <div class="px-5 py-3.5 border-b border-border/50 bg-muted/10 flex flex-wrap items-center justify-between gap-4 z-10 shrink-0">
             
             <!-- Left Side: Parameter Groups -->
             <div class="flex flex-wrap items-center gap-y-4 gap-x-8">
@@ -562,4 +645,21 @@ const globalLogs = ref([
 
 <style>
 /* No custom scrollbars needed */
+
+/* Vue Transition Group Animations for Tabs */
+.tab-list-move,
+.tab-list-enter-active,
+.tab-list-leave-active {
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.tab-list-enter-from,
+.tab-list-leave-to {
+  opacity: 0;
+  transform: translateY(10px) scale(0.95);
+}
+
+.tab-list-leave-active {
+  position: absolute;
+}
 </style>
