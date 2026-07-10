@@ -114,21 +114,32 @@ export function parseUserInput(
   byteOrder: string,
   functionCode: string
 ): number[] {
+  const normalizedInput = input.trim()
+
   // Coils
   if (functionCode === '01') {
-    if (input === '1' || input.toLowerCase() === 'true' || input.toLowerCase() === 'on') return [1]
-    if (input === '0' || input.toLowerCase() === 'false' || input.toLowerCase() === 'off') return [0]
+    const lowerInput = normalizedInput.toLowerCase()
+    if (normalizedInput === '1' || lowerInput === 'true' || lowerInput === 'on') return [1]
+    if (normalizedInput === '0' || lowerInput === 'false' || lowerInput === 'off') return [0]
     throw new Error("Coils only accept 0 or 1")
   }
 
   let num = 0
   
   if (format === 'Hex') {
-    num = parseInt(input.replace('0x', ''), 16)
+    if (!/^(0x)?[0-9a-fA-F]+$/.test(normalizedInput)) throw new Error("Invalid hexadecimal number")
+    num = parseInt(normalizedInput.replace(/^0x/i, ''), 16)
   } else if (format === 'Bin') {
-    num = parseInt(input, 2)
+    if (!/^[01]+$/.test(normalizedInput)) throw new Error("Invalid binary number")
+    num = parseInt(normalizedInput, 2)
   } else {
-    num = type === 'Float32' ? parseFloat(input) : parseInt(input, 10)
+    if (type === 'Float32') {
+      if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalizedInput)) throw new Error("Invalid decimal number")
+      num = parseFloat(normalizedInput)
+    } else {
+      if (!/^[+-]?\d+$/.test(normalizedInput)) throw new Error("Invalid integer")
+      num = parseInt(normalizedInput, 10)
+    }
   }
 
   if (isNaN(num)) throw new Error("Invalid number")

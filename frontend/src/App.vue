@@ -219,8 +219,12 @@ const toggleConnection = async () => {
 const writeTarget = ref({ address: 0, currentValue: '' as string | number, newValue: '' as string | number })
 
 const openWriteDialog = (address: number, currentValue: string | number) => {
-  // Only allow writing if it's a writable function code and we're connected (simulated)
-  if (activeInstance.value?.functionCode === '02' || activeInstance.value?.functionCode === '04') {
+  if (!activeInstance.value) return
+  if (activeInstance.value.status !== 'connected') {
+    setStatus(`[${activeInstance.value.name}] Connect before writing.`, 'error')
+    return
+  }
+  if (activeInstance.value.functionCode === '02' || activeInstance.value.functionCode === '04') {
     alert("Function code 02 and 04 are Read-Only.")
     return
   }
@@ -229,16 +233,25 @@ const openWriteDialog = (address: number, currentValue: string | number) => {
 }
 
 const commitWrite = async () => {
+  const inst = activeInstance.value
+  if (!inst) return
+
+  let parsedValues: number[]
+
   try {
-    const inst = activeInstance.value!
-    const parsedValues = parseUserInput(
+    parsedValues = parseUserInput(
       String(writeTarget.value.newValue),
       inst.dataType,
       inst.format,
       inst.byteOrder,
       inst.functionCode
     )
-    
+  } catch (e) {
+    setStatus(`[${inst.name}] Invalid input: ${e}`, 'error')
+    return
+  }
+
+  try {
     if (inst.type === 'master') {
       const isCoil = inst.functionCode === '01'
       if (parsedValues.length === 1) {
@@ -260,13 +273,10 @@ const commitWrite = async () => {
     }
     readOnce(inst)
   } catch (e) {
-    const inst = activeInstance.value
-    if (inst) {
+    if (inst.type === 'master') {
       await markMasterError(inst)
-      setStatus(`[${inst.name}] Write failed: ${e}`, 'error')
-    } else {
-      setStatus(`Write failed: ${e}`, 'error')
     }
+    setStatus(`[${inst.name}] Write failed: ${e}`, 'error')
   }
   showWriteDialog.value = false
 }

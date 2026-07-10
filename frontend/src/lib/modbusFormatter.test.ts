@@ -39,6 +39,13 @@ describe('modbusFormatter', () => {
       expect(parseUserInput('0x1234', 'UInt16', 'Hex', 'ABCD', '03')).toEqual([0x1234])
       expect(parseUserInput('0xFFFFFFFF', 'UInt32', 'Hex', 'ABCD', '03')).toEqual([65535, 65535])
     })
+
+    it('rejects partial numeric input', () => {
+      expect(() => parseUserInput('12abc', 'UInt16', 'Dec', 'ABCD', '03')).toThrowError(/Invalid integer/)
+      expect(() => parseUserInput('0x12zz', 'UInt16', 'Hex', 'ABCD', '03')).toThrowError(/Invalid hexadecimal/)
+      expect(() => parseUserInput('10102', 'UInt16', 'Bin', 'ABCD', '03')).toThrowError(/Invalid binary/)
+      expect(() => parseUserInput('1.2.3', 'Float32', 'Dec', 'ABCD', '03')).toThrowError(/Invalid decimal/)
+    })
   })
 
   describe('formatRegisterValue (Modbus Registers -> String)', () => {
