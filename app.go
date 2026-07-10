@@ -3,27 +3,49 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
-	"github.com/simonvetter/modbus"
+	"github.com/dduutt/modbus"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	gserial "go.bug.st/serial"
+	"go.bug.st/serial/enumerator"
 )
 
-type ServerMemory struct {
-	Registers []uint16
-	Coils     []bool
+type ServerInstance struct {
+	cancel context.CancelFunc
+	store  *modbus.MemoryDataStore
+	conn   io.Closer
+	handle io.Closer
+}
+
+type ClientInstance struct {
+	transport modbus.Transport
+	conn      io.Closer
 }
 
 type App struct {
-	ctx          context.Context
-	clients      sync.Map
-	servers      sync.Map
-	serverMemory sync.Map
+	ctx     context.Context
+	clients sync.Map
+	servers sync.Map
 }
 
 func NewApp() *App {
 	return &App{}
+}
+
+// GetAvailablePorts scans the system for available serial ports
+func (a *App) GetAvailablePorts() ([]string, error) {
+	ports, err := enumerator.GetDetailedPortsList()
+	if err != nil {
+		return nil, err
+	}
+	var portNames []string
+	for _, port := range ports {
+		portNames = append(portNames, port.Name)
+	}
+	return portNames, nil
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -37,19 +59,21 @@ func (a *App) shutdown(ctx context.Context) {
 // ClearAllConnections forcefully stops all clients and servers. Useful for frontend hot-reloads.
 func (a *App) ClearAllConnections() error {
 	a.clients.Range(func(key, value interface{}) bool {
-		client := value.(*modbus.ModbusClient)
-		client.Close()
+		ci := value.(*ClientInstance)
+		ci.transport.Close()
+		if ci.conn != nil {
+			ci.conn.Close()
+		}
 		a.clients.Delete(key)
 		return true
 	})
 	a.servers.Range(func(key, value interface{}) bool {
-		server := value.(*modbus.ModbusServer)
-		server.Stop()
+		si := value.(*ServerInstance)
+		si.cancel()
+		if si.conn != nil {
+			si.conn.Close()
+		}
 		a.servers.Delete(key)
-		return true
-	})
-	a.serverMemory.Range(func(key, value interface{}) bool {
-		a.serverMemory.Delete(key)
 		return true
 	})
 	return nil
@@ -59,58 +83,67 @@ func (a *App) ClearAllConnections() error {
 // MASTER (CLIENT) LOGIC
 // ---------------------------------------------------------
 
-func getParity(p string) uint {
+func getParity(p string) gserial.Parity {
 	switch p {
-	case "None":
-		return modbus.PARITY_NONE
-	case "Even":
-		return modbus.PARITY_EVEN
-	case "Odd":
-		return modbus.PARITY_ODD
+	case "None", "N":
+		return gserial.NoParity
+	case "Even", "E":
+		return gserial.EvenParity
+	case "Odd", "O":
+		return gserial.OddParity
 	}
-	return modbus.PARITY_NONE
+	return gserial.NoParity
+}
+
+func getStopBits(s uint) gserial.StopBits {
+	switch s {
+	case 1:
+		return gserial.OneStopBit
+	case 2:
+		return gserial.TwoStopBits
+	}
+	return gserial.OneStopBit
 }
 
 // ConnectMaster creates and connects a Modbus Client
 func (a *App) ConnectMaster(id string, protocol string, address string, rtuBaudRate uint, rtuDataBits uint, rtuParity string, rtuStopBits uint) error {
-	// Disconnect existing if any
-	if existing, ok := a.clients.Load(id); ok {
-		existing.(*modbus.ModbusClient).Close()
-		a.clients.Delete(id)
-	}
+	a.DisconnectMaster(id)
 
-	uri := ""
+	var transport modbus.Transport
+	var conn io.ReadWriteCloser
+
 	if protocol == "tcp" {
-		uri = "tcp://" + address
+		transport = modbus.NewTCPTransport(address, modbus.WithTCPTimeout(2*time.Second))
 	} else {
-		uri = "rtu://" + address
+		mode := &gserial.Mode{
+			BaudRate: int(rtuBaudRate),
+			DataBits: int(rtuDataBits),
+			Parity:   getParity(rtuParity),
+			StopBits: getStopBits(rtuStopBits),
+		}
+		port, err := gserial.Open(address, mode)
+		if err != nil {
+			return err
+		}
+		conn = port
+		transport = modbus.NewRTUTransport(port, modbus.WithRTUTimeout(2*time.Second))
 	}
 
-	client, err := modbus.NewClient(&modbus.ClientConfiguration{
-		URL:      uri,
-		Speed:    rtuBaudRate,
-		DataBits: rtuDataBits,
-		Parity:   getParity(rtuParity),
-		StopBits: rtuStopBits,
-		Timeout:  2 * time.Second,
+	a.clients.Store(id, &ClientInstance{
+		transport: transport,
+		conn:      conn,
 	})
-	if err != nil {
-		return err
-	}
-
-	err = client.Open()
-	if err != nil {
-		return err
-	}
-
-	a.clients.Store(id, client)
 	return nil
 }
 
 // DisconnectMaster stops a Modbus Client
 func (a *App) DisconnectMaster(id string) error {
 	if val, ok := a.clients.Load(id); ok {
-		val.(*modbus.ModbusClient).Close()
+		ci := val.(*ClientInstance)
+		ci.transport.Close()
+		if ci.conn != nil {
+			ci.conn.Close()
+		}
 		a.clients.Delete(id)
 	}
 	return nil
@@ -123,16 +156,17 @@ func (a *App) ReadRegisters(id string, unitId uint8, functionCode string, addres
 		return nil, fmt.Errorf("client %s not connected", id)
 	}
 
-	client := val.(*modbus.ModbusClient)
-	client.SetUnitId(unitId)
+	ci := val.(*ClientInstance)
+	client := modbus.NewClient(ci.transport, modbus.WithUnitID(unitId))
+	ctx := context.Background()
 
 	switch functionCode {
 	case "03":
-		return client.ReadRegisters(address, count, modbus.HOLDING_REGISTER)
+		return client.ReadHoldingRegisters(ctx, address, count)
 	case "04":
-		return client.ReadRegisters(address, count, modbus.INPUT_REGISTER)
+		return client.ReadInputRegisters(ctx, address, count)
 	case "01":
-		bools, err := client.ReadCoils(address, count)
+		bools, err := client.ReadCoils(ctx, address, count)
 		if err != nil {
 			return nil, err
 		}
@@ -144,7 +178,7 @@ func (a *App) ReadRegisters(id string, unitId uint8, functionCode string, addres
 		}
 		return res, nil
 	case "02":
-		bools, err := client.ReadDiscreteInputs(address, count)
+		bools, err := client.ReadDiscreteInputs(ctx, address, count)
 		if err != nil {
 			return nil, err
 		}
@@ -166,10 +200,11 @@ func (a *App) WriteRegister(id string, unitId uint8, address uint16, value uint1
 		return fmt.Errorf("client %s not connected", id)
 	}
 
-	client := val.(*modbus.ModbusClient)
-	client.SetUnitId(unitId)
+	ci := val.(*ClientInstance)
+	client := modbus.NewClient(ci.transport, modbus.WithUnitID(unitId))
+	ctx := context.Background()
 
-	return client.WriteRegister(address, value)
+	return client.WriteSingleRegister(ctx, address, value)
 }
 
 // WriteMultipleRegisters writes multiple registers to the client
@@ -179,128 +214,178 @@ func (a *App) WriteMultipleRegisters(id string, unitId uint8, address uint16, va
 		return fmt.Errorf("client %s not connected", id)
 	}
 
-	client := val.(*modbus.ModbusClient)
-	client.SetUnitId(unitId)
+	ci := val.(*ClientInstance)
+	client := modbus.NewClient(ci.transport, modbus.WithUnitID(unitId))
+	ctx := context.Background()
 
-	return client.WriteRegisters(address, values)
+	return client.WriteMultipleRegisters(ctx, address, values)
+}
+
+// WriteCoil writes a single coil to the client
+func (a *App) WriteCoil(id string, unitId uint8, address uint16, value uint16) error {
+	val, ok := a.clients.Load(id)
+	if !ok {
+		return fmt.Errorf("client %s not connected", id)
+	}
+
+	ci := val.(*ClientInstance)
+	client := modbus.NewClient(ci.transport, modbus.WithUnitID(unitId))
+	ctx := context.Background()
+
+	return client.WriteSingleCoil(ctx, address, value > 0)
+}
+
+// WriteMultipleCoils writes multiple coils to the client
+func (a *App) WriteMultipleCoils(id string, unitId uint8, address uint16, values []uint16) error {
+	val, ok := a.clients.Load(id)
+	if !ok {
+		return fmt.Errorf("client %s not connected", id)
+	}
+
+	ci := val.(*ClientInstance)
+	client := modbus.NewClient(ci.transport, modbus.WithUnitID(unitId))
+	ctx := context.Background()
+
+	bools := make([]bool, len(values))
+	for i, v := range values {
+		bools[i] = (v > 0)
+	}
+
+	return client.WriteMultipleCoils(ctx, address, bools)
 }
 
 // ---------------------------------------------------------
 // SLAVE (SERVER) LOGIC
 // ---------------------------------------------------------
 
-type SlaveHandler struct {
-	id  string
-	app *App
+// WrappedDataStore intercepts writes to emit Wails events
+type WrappedDataStore struct {
+	store *modbus.MemoryDataStore
+	ctx   context.Context
+	id    string
 }
 
-func (h *SlaveHandler) HandleCoils(req *modbus.CoilsRequest) (res []bool, err error) {
-	mem, ok := h.app.serverMemory.Load(h.id)
-	if !ok {
-		return nil, modbus.ErrIllegalDataAddress
-	}
-	m := mem.(*ServerMemory)
+func (w *WrappedDataStore) ReadCoils(address, quantity uint16) ([]bool, error) {
+	return w.store.ReadCoils(address, quantity)
+}
 
-	if req.IsWrite {
-		for i, val := range req.Args {
-			m.Coils[int(req.Addr)+i] = val
+func (w *WrappedDataStore) ReadDiscreteInputs(address, quantity uint16) ([]bool, error) {
+	return w.store.ReadDiscreteInputs(address, quantity)
+}
+
+func (w *WrappedDataStore) ReadHoldingRegisters(address, quantity uint16) ([]uint16, error) {
+	return w.store.ReadHoldingRegisters(address, quantity)
+}
+
+func (w *WrappedDataStore) ReadInputRegisters(address, quantity uint16) ([]uint16, error) {
+	return w.store.ReadInputRegisters(address, quantity)
+}
+
+func (w *WrappedDataStore) WriteCoils(address uint16, values []bool) error {
+	err := w.store.WriteCoils(address, values)
+	if err == nil {
+		if w.ctx != nil {
+			runtime.EventsEmit(w.ctx, "slave_write", w.id, address, []uint16{})
 		}
-		return req.Args, nil
-	} else {
-		return m.Coils[req.Addr : req.Addr+req.Quantity], nil
 	}
+	return err
 }
 
-func (h *SlaveHandler) HandleDiscreteInputs(req *modbus.DiscreteInputsRequest) (res []bool, err error) {
-	mem, ok := h.app.serverMemory.Load(h.id)
-	if !ok {
-		return nil, modbus.ErrIllegalDataAddress
-	}
-	m := mem.(*ServerMemory)
-	return m.Coils[req.Addr : req.Addr+req.Quantity], nil
-}
-
-func (h *SlaveHandler) HandleHoldingRegisters(req *modbus.HoldingRegistersRequest) (res []uint16, err error) {
-	mem, ok := h.app.serverMemory.Load(h.id)
-	if !ok {
-		return nil, modbus.ErrIllegalDataAddress
-	}
-	m := mem.(*ServerMemory)
-
-	if req.IsWrite {
-		for i, val := range req.Args {
-			m.Registers[int(req.Addr)+i] = val
+func (w *WrappedDataStore) WriteHoldingRegisters(address uint16, values []uint16) error {
+	err := w.store.WriteHoldingRegisters(address, values)
+	if err == nil {
+		if w.ctx != nil {
+			runtime.EventsEmit(w.ctx, "slave_write", w.id, address, values)
 		}
-		// Notify frontend
-		runtime.EventsEmit(h.app.ctx, "slave_write", h.id, req.Addr, req.Args)
-		return req.Args, nil
-	} else {
-		return m.Registers[req.Addr : req.Addr+req.Quantity], nil
 	}
-}
-
-func (h *SlaveHandler) HandleInputRegisters(req *modbus.InputRegistersRequest) (res []uint16, err error) {
-	mem, ok := h.app.serverMemory.Load(h.id)
-	if !ok {
-		return nil, modbus.ErrIllegalDataAddress
-	}
-	m := mem.(*ServerMemory)
-	return m.Registers[req.Addr : req.Addr+req.Quantity], nil
+	return err
 }
 
 // StartSlave starts a Modbus Server
-func (a *App) StartSlave(id string, protocol string, address string) error {
+func (a *App) StartSlave(id string, protocol string, address string, rtuBaudRate uint, rtuDataBits uint, rtuParity string, rtuStopBits uint) error {
 	a.StopSlave(id)
 
-	a.serverMemory.Store(id, &ServerMemory{
-		Registers: make([]uint16, 65536),
-		Coils:     make([]bool, 65536),
+	store := modbus.NewMemoryDataStoreSized(65536, 65536, 65536, 65536)
+	wstore := &WrappedDataStore{
+		store: store,
+		ctx:   a.ctx,
+		id:    id,
+	}
+
+	handler := modbus.NewDataStoreHandler(wstore)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var conn io.ReadWriteCloser
+	var handle io.Closer
+	var err error
+
+	if protocol == "tcp" {
+		handle, err = modbus.StartTCPServer(ctx, address, handler)
+		if err != nil {
+			cancel()
+			return err
+		}
+	} else {
+		mode := &gserial.Mode{
+			BaudRate: int(rtuBaudRate),
+			DataBits: int(rtuDataBits),
+			Parity:   getParity(rtuParity),
+			StopBits: getStopBits(rtuStopBits),
+		}
+		port, err := gserial.Open(address, mode)
+		if err != nil {
+			cancel()
+			return err
+		}
+		conn = port
+		handle = modbus.StartRTUServer(ctx, port, handler)
+	}
+
+	a.servers.Store(id, &ServerInstance{
+		cancel: cancel,
+		store:  store,
+		conn:   conn,
+		handle: handle,
 	})
 
-	uri := ""
-	if protocol == "tcp" {
-		uri = "tcp://" + address
-	} else {
-		uri = "rtu://" + address
-	}
-
-	handler := &SlaveHandler{id: id, app: a}
-
-	server, err := modbus.NewServer(&modbus.ServerConfiguration{
-		URL:        uri,
-		Timeout:    10 * time.Second,
-		MaxClients: 5,
-	}, handler)
-
-	if err != nil {
-		return err
-	}
-
-	err = server.Start()
-	if err != nil {
-		return err
-	}
-
-	a.servers.Store(id, server)
 	return nil
 }
 
 func (a *App) StopSlave(id string) error {
 	if val, ok := a.servers.Load(id); ok {
-		val.(*modbus.ModbusServer).Stop()
+		si := val.(*ServerInstance)
+		si.cancel()
+		if si.handle != nil {
+			si.handle.Close()
+		}
+		if si.conn != nil {
+			si.conn.Close()
+		}
 		a.servers.Delete(id)
 	}
-	// We don't delete memory immediately so frontend can still see the last values
 	return nil
 }
 
 // UpdateSlaveData allows the frontend to write data into the server memory manually
-func (a *App) UpdateSlaveData(id string, address uint16, values []uint16) error {
-	if val, ok := a.serverMemory.Load(id); ok {
-		m := val.(*ServerMemory)
-		for i, v := range values {
-			if int(address)+i < len(m.Registers) {
-				m.Registers[int(address)+i] = v
+func (a *App) UpdateSlaveData(id string, address uint16, values []uint16, functionCode string) error {
+	if val, ok := a.servers.Load(id); ok {
+		si := val.(*ServerInstance)
+		
+		if functionCode == "01" || functionCode == "02" {
+			bools := make([]bool, len(values))
+			for i, v := range values {
+				bools[i] = (v > 0)
+			}
+			if functionCode == "01" {
+				si.store.WriteCoils(address, bools)
+			} else {
+				si.store.WriteDiscreteInputs(address, bools)
+			}
+		} else {
+			if functionCode == "03" {
+				si.store.WriteHoldingRegisters(address, values)
+			} else {
+				si.store.WriteInputRegisters(address, values)
 			}
 		}
 		return nil
@@ -309,12 +394,34 @@ func (a *App) UpdateSlaveData(id string, address uint16, values []uint16) error 
 }
 
 // GetSlaveData allows the frontend to fetch current memory
-func (a *App) GetSlaveData(id string, address uint16, count uint16) ([]uint16, error) {
-	if val, ok := a.serverMemory.Load(id); ok {
-		m := val.(*ServerMemory)
-		if int(address+count) <= len(m.Registers) {
-			return m.Registers[address : address+count], nil
+func (a *App) GetSlaveData(id string, address uint16, count uint16, functionCode string) ([]uint16, error) {
+	if val, ok := a.servers.Load(id); ok {
+		si := val.(*ServerInstance)
+		if functionCode == "01" || functionCode == "02" {
+			var bools []bool
+			var err error
+			if functionCode == "01" {
+				bools, err = si.store.ReadCoils(address, count)
+			} else {
+				bools, err = si.store.ReadDiscreteInputs(address, count)
+			}
+			if err != nil {
+				return nil, err
+			}
+			res := make([]uint16, len(bools))
+			for i, b := range bools {
+				if b {
+					res[i] = 1
+				}
+			}
+			return res, nil
+		} else {
+			if functionCode == "03" {
+				return si.store.ReadHoldingRegisters(address, count)
+			} else {
+				return si.store.ReadInputRegisters(address, count)
+			}
 		}
 	}
-	return nil, fmt.Errorf("slave memory not found or out of bounds")
+	return nil, fmt.Errorf("slave memory not found")
 }

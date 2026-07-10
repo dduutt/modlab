@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Plus, X, Terminal, Server, MonitorSmartphone, Settings2, Check } from '@lucide/vue'
-import { ConnectMaster, DisconnectMaster, ReadRegisters, WriteRegister, WriteMultipleRegisters, StartSlave, StopSlave, GetSlaveData, UpdateSlaveData, ClearAllConnections } from '../wailsjs/go/main/App'
+import { ConnectMaster, DisconnectMaster, ReadRegisters, WriteRegister, WriteMultipleRegisters, StartSlave, StopSlave, GetSlaveData, UpdateSlaveData, ClearAllConnections, GetAvailablePorts } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 import { formatRegisterValue, parseUserInput } from './lib/modbusFormatter'
 
@@ -16,54 +16,11 @@ import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 // Types
-interface ModbusInstance {
-  id: string
-  name: string
-  type: 'master' | 'slave'
-  status: 'connected' | 'disconnected'
-  hasError: boolean
-  protocol: 'tcp' | 'rtu'
-  tcpConfig: { ip: string, port: number }
-  rtuConfig: { port: string, baudRate: number, dataBits: number, stopBits: number, parity: string }
-  slaveId: number
-  functionCode: string
-  startAddress: number
-  count: number
-  dataType: string
-  format: string
-  byteOrder: string
-  intervalMs: number
-  isAutoRead: boolean
-  data: number[]
-}
+import { useModbusStore, type ModbusInstance, createDefaultInstance } from './store/modbusStore'
+import { storeToRefs } from 'pinia'
 
-const createDefaultInstance = (id: string, type: 'master' | 'slave'): ModbusInstance => ({
-  id,
-  name: `${type === 'master' ? 'Master' : 'Slave'} ${id}`,
-  type,
-  status: 'disconnected',
-  hasError: false,
-  protocol: 'tcp',
-  tcpConfig: { ip: '127.0.0.1', port: 502 },
-  rtuConfig: { port: 'COM1', baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'None' },
-  slaveId: 1,
-  functionCode: '03',
-  startAddress: 0,
-  count: 40,
-  dataType: 'Int16',
-  format: 'Dec',
-  byteOrder: 'ABCD',
-  intervalMs: 1000,
-  isAutoRead: false,
-  data: Array(100).fill(0),
-})
-
-const instances = ref<ModbusInstance[]>([
-  createDefaultInstance('1', 'master')
-])
-
-const activeTab = ref('1')
-let nextId = 2
+const modbusStore = useModbusStore()
+const { instances, activeTab } = storeToRefs(modbusStore)
 
 const activeInstance = computed(() => instances.value.find(i => i.id === activeTab.value))
 
@@ -82,14 +39,26 @@ const showLogDialog = ref(false)
 // Connection Setup temporary state
 const tempConnectionConfig = ref<any>({})
 
+// Available Serial Ports
+const availablePorts = ref<string[]>([])
+const fetchPorts = async () => {
+  try {
+    const ports = await GetAvailablePorts()
+    availablePorts.value = ports || []
+  } catch(e) {
+    console.error("Failed to fetch ports", e)
+  }
+}
+
 // System Status
 const systemStatus = ref({ text: 'System Ready.', type: 'info' as 'info' | 'success' | 'error' })
 const setStatus = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
   systemStatus.value = { text, type }
 }
 
-const openConnectionDialog = () => {
+const openConnectionDialog = async () => {
   if (!activeInstance.value) return
+  await fetchPorts()
   // Clone current config to temp state
   tempConnectionConfig.value = JSON.parse(JSON.stringify({
     protocol: activeInstance.value.protocol,
@@ -172,7 +141,7 @@ const readOnce = async (inst: ModbusInstance) => {
           setStatus(`[${inst.name}] Read ${inst.count} registers successfully.`, 'success')
         }
       } else {
-        const res = await GetSlaveData(inst.id, inst.startAddress, inst.count)
+        const res = await GetSlaveData(inst.id, inst.startAddress, inst.count, inst.functionCode)
         if (res && res.length) {
           for(let i=0; i<res.length; i++) {
             inst.data[i] = res[i]
@@ -198,6 +167,7 @@ const toggleConnection = async () => {
       inst.status = 'disconnected'
       inst.hasError = false
       inst.isAutoRead = false
+      inst.isAutoIncrement = false
       stopPolling(inst.id)
       setStatus(`[${inst.name}] Disconnected.`, 'info')
     } catch (e) {
@@ -217,10 +187,10 @@ const toggleConnection = async () => {
       } else {
         // SLAVE LOGIC
         if (inst.protocol === 'tcp') {
-          await StartSlave(inst.id, 'tcp', `${inst.tcpConfig.ip}:${inst.tcpConfig.port}`)
+          await StartSlave(inst.id, 'tcp', `${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 0, 0, "", 0)
           setStatus(`[${inst.name}] Listening on TCP ${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 'success')
         } else {
-          await StartSlave(inst.id, 'rtu', inst.rtuConfig.port)
+          await StartSlave(inst.id, 'rtu', inst.rtuConfig.port, inst.rtuConfig.baudRate, inst.rtuConfig.dataBits, inst.rtuConfig.parity, inst.rtuConfig.stopBits)
           setStatus(`[${inst.name}] Listening on RTU ${inst.rtuConfig.port}`, 'success')
         }
       }
@@ -258,15 +228,24 @@ const commitWrite = async () => {
     )
     
     if (inst.type === 'master') {
+      const isCoil = inst.functionCode === '01'
       if (parsedValues.length === 1) {
-        await WriteRegister(inst.id, inst.slaveId, writeTarget.value.address, parsedValues[0])
+        if (isCoil) {
+          await (window as any).go.main.App.WriteCoil(inst.id, inst.slaveId, writeTarget.value.address, parsedValues[0])
+        } else {
+          await WriteRegister(inst.id, inst.slaveId, writeTarget.value.address, parsedValues[0])
+        }
       } else {
-        await WriteMultipleRegisters(inst.id, inst.slaveId, writeTarget.value.address, parsedValues)
+        if (isCoil) {
+          await (window as any).go.main.App.WriteMultipleCoils(inst.id, inst.slaveId, writeTarget.value.address, parsedValues)
+        } else {
+          await WriteMultipleRegisters(inst.id, inst.slaveId, writeTarget.value.address, parsedValues)
+        }
       }
     } else {
-      await UpdateSlaveData(inst.id, writeTarget.value.address, parsedValues)
+      await UpdateSlaveData(inst.id, writeTarget.value.address, parsedValues, inst.functionCode)
+      setStatus(`[${inst.name}] Updated local memory at ${writeTarget.value.address}.`, 'success')
     }
-    setStatus(`[${inst.name}] Wrote to address ${writeTarget.value.address}.`, 'success')
     readOnce(inst)
   } catch (e) {
     setStatus(`[${activeInstance.value!.name}] Write failed: ${e}`, 'error')
@@ -274,32 +253,161 @@ const commitWrite = async () => {
   showWriteDialog.value = false
 }
 
-// Listen for external Master writing to our Server
-onMounted(() => {
-  // Always nuke existing connections on fresh load/refresh to prevent zombie ports
-  ClearAllConnections().catch(console.error)
-
-  // Restore state from localStorage
-  const savedState = localStorage.getItem('modbus_instances')
-  if (savedState) {
+const onAddressingChange = async (inst: ModbusInstance) => {
+  if (inst.type === 'slave' && inst.status === 'connected') {
     try {
-      const parsed = JSON.parse(savedState)
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        parsed.forEach((inst: any) => {
-          // Reset runtime states
-          inst.status = 'disconnected'
-          inst.isAutoRead = false
-          inst.hasError = false
-          // Initialize empty data array
-          inst.data = new Array(inst.count || 100).fill(0)
-        })
-        instances.value = parsed
-        activeTab.value = parsed[0].id
+      const res = await GetSlaveData(inst.id, inst.startAddress, inst.count, inst.functionCode)
+      if (res && res.length) {
+        for(let i=0; i<res.length; i++) {
+          inst.data[i] = res[i]
+        }
+        // zero out the rest up to count just in case
+        for(let i=res.length; i<inst.count; i++) {
+          inst.data[i] = 0
+        }
       }
     } catch (e) {
-      console.error('Failed to parse saved instances', e)
+      console.error("Failed to fetch slave data on addressing change", e)
     }
   }
+}
+
+const randomizeSlave = async (inst: ModbusInstance) => {
+  if (inst.status !== 'connected') return
+  const isCoil = inst.functionCode === '01' || inst.functionCode === '02'
+  const is32Bit = !isCoil && (inst.dataType === 'Int32' || inst.dataType === 'UInt32' || inst.dataType === 'Float32')
+  
+  const randomValues: number[] = []
+  
+  if (isCoil) {
+    for (let i = 0; i < inst.count; i++) {
+      randomValues.push(Math.random() > 0.5 ? 1 : 0)
+    }
+  } else {
+    let i = 0
+    while (i < inst.count) {
+      let valStr = '0'
+      if (inst.dataType === 'Int16') {
+        valStr = String(Math.floor(Math.random() * 65536) - 32768)
+      } else if (inst.dataType === 'UInt16') {
+        valStr = String(Math.floor(Math.random() * 65536))
+      } else if (inst.dataType === 'Int32') {
+        valStr = String(Math.floor(Math.random() * 4294967296) - 2147483648)
+      } else if (inst.dataType === 'UInt32') {
+        valStr = String(Math.floor(Math.random() * 4294967296))
+      } else if (inst.dataType === 'Float32') {
+        valStr = String((Math.random() * 10000 - 5000).toFixed(4))
+      }
+      
+      try {
+        const parsed = parseUserInput(valStr, inst.dataType, 'Dec', inst.byteOrder, inst.functionCode)
+        if (is32Bit) {
+          randomValues.push(parsed[0])
+          if (i + 1 < inst.count) {
+            randomValues.push(parsed[1])
+          }
+          i += 2
+        } else {
+          randomValues.push(parsed[0])
+          i += 1
+        }
+      } catch (e) {
+        // Fallback safety
+        randomValues.push(0)
+        i += 1
+      }
+    }
+  }
+
+  try {
+    await UpdateSlaveData(inst.id, inst.startAddress, randomValues, inst.functionCode)
+    inst.data = randomValues
+    setStatus(`[${inst.name}] Randomized ${inst.count} values based on ${inst.dataType}.`, 'success')
+  } catch (e: any) {
+    setStatus(`[${inst.name}] Randomize error: ${e}`, 'error')
+  }
+}
+
+const incrementSlave = async (inst: ModbusInstance) => {
+  if (inst.status !== 'connected') return
+  const isCoil = inst.functionCode === '01' || inst.functionCode === '02'
+  const is32Bit = !isCoil && (inst.dataType === 'Int32' || inst.dataType === 'UInt32' || inst.dataType === 'Float32')
+  
+  const newValues: number[] = []
+  
+  if (isCoil) {
+    for (let i = 0; i < inst.count; i++) {
+      newValues.push(inst.data[i] === 1 ? 0 : 1)
+    }
+  } else {
+    let i = 0
+    while (i < inst.count) {
+      let currentStr = formatRegisterValue(inst.data, i, inst.dataType, 'Dec', inst.byteOrder, inst.functionCode)
+      if (currentStr === '---' || currentStr === '-') currentStr = '0'
+      
+      let num = parseFloat(currentStr)
+      if (isNaN(num)) num = 0
+      
+      if (inst.dataType === 'Float32') {
+        num += 1.5
+      } else {
+        num += 1
+      }
+      
+      let newStr = String(num)
+      
+      try {
+        const parsed = parseUserInput(newStr, inst.dataType, 'Dec', inst.byteOrder, inst.functionCode)
+        if (is32Bit) {
+          newValues.push(parsed[0])
+          if (i + 1 < inst.count) {
+            newValues.push(parsed[1])
+          }
+          i += 2
+        } else {
+          newValues.push(parsed[0])
+          i += 1
+        }
+      } catch (e) {
+        newValues.push(0)
+        i += 1
+      }
+    }
+  }
+
+  try {
+    await UpdateSlaveData(inst.id, inst.startAddress, newValues, inst.functionCode)
+    inst.data = newValues
+  } catch (e: any) {
+    setStatus(`[${inst.name}] Increment error: ${e}`, 'error')
+  }
+}
+
+const startAutoIncrement = (inst: ModbusInstance) => {
+  stopPolling(inst.id)
+  const timer = setInterval(() => {
+    incrementSlave(inst)
+  }, inst.intervalMs || 1000)
+  activeTimers.set(inst.id, timer)
+}
+
+const toggleAutoIncrement = (inst: ModbusInstance) => {
+  inst.isAutoIncrement = !inst.isAutoIncrement
+  if (inst.isAutoIncrement) {
+    startAutoIncrement(inst)
+    setStatus(`[${inst.name}] Auto Increment started.`, 'info')
+  } else {
+    stopPolling(inst.id)
+    setStatus(`[${inst.name}] Auto Increment stopped.`, 'info')
+  }
+}
+
+
+// Listen for external Master writing to our Server
+onMounted(() => {
+  fetchPorts()
+  // Always nuke existing connections on fresh load/refresh to prevent zombie ports
+  ClearAllConnections().catch(console.error)
 
   EventsOn('slave_write', (id: string, addr: number, args: number[]) => {
     const inst = instances.value.find(i => i.id === id)
@@ -326,17 +434,6 @@ onUnmounted(() => {
   EventsOff('slave_write')
 })
 
-// Auto-save state to localStorage (debounced)
-let saveTimeout: any
-watch(instances, () => {
-  clearTimeout(saveTimeout)
-  saveTimeout = setTimeout(() => {
-    // Strip data arrays to save space
-    const toSave = instances.value.map(inst => ({ ...inst, data: [] }))
-    localStorage.setItem('modbus_instances', JSON.stringify(toSave))
-  }, 1000)
-}, { deep: true })
-
 // Instance Management
 const newInstanceName = ref('')
 const nameError = ref('')
@@ -353,9 +450,10 @@ watch(newInstanceName, () => {
 })
 
 const addInstance = (type: 'master' | 'slave') => {
-  const newId = String(nextId++)
+  const maxId = instances.value.reduce((max, inst) => Math.max(max, parseInt(inst.id) || 0), 0)
+  const newId = String(maxId + 1)
   const name = newInstanceName.value.trim() || `${type === 'master' ? 'Master' : 'Slave'} ${newId}`
-  
+
   if (instances.value.some(inst => inst.name.toLowerCase() === name.toLowerCase())) {
     nameError.value = 'A connection with this name already exists.'
     return
@@ -393,14 +491,28 @@ const removeInstance = (id: string, event: Event) => {
 // Generate Mock Data for 11-column matrix
 const getMatrixRows = (instance: ModbusInstance) => {
   const rowCount = Math.ceil(instance.count / 10)
+  const isCoil = instance.functionCode === '01' || instance.functionCode === '02'
+  const is32Bit = !isCoil && (instance.dataType === 'Int32' || instance.dataType === 'UInt32' || instance.dataType === 'Float32')
+  
   return Array.from({ length: rowCount }).map((_, rIndex) => {
     return Array.from({ length: 10 }).map((_, cIndex) => {
       const addr = rIndex * 10 + cIndex
+      let val = null
+      if (addr < instance.count) {
+        if (is32Bit && addr % 2 !== 0) {
+          val = '-'
+        } else {
+          val = formatRegisterValue(instance.data, addr, instance.dataType, instance.format, instance.byteOrder, instance.functionCode)
+        }
+      }
+      let rawVal = ''
+      if (addr < instance.count && !isCoil && instance.data[addr] !== undefined) {
+        rawVal = '0x' + (instance.data[addr] & 0xFFFF).toString(16).toUpperCase().padStart(4, '0')
+      }
       return {
         address: addr,
-        value: addr < instance.count 
-          ? formatRegisterValue(instance.data, addr, instance.dataType, instance.format, instance.byteOrder, instance.functionCode) 
-          : null // null for out of bounds
+        value: val,
+        rawValue: rawVal
       }
     })
   })
@@ -503,6 +615,30 @@ const globalLogs = ref([
 
             <div class="flex items-center gap-3 shrink-0 ml-auto">
               <Button 
+                v-if="instance.type === 'slave'"
+                variant="outline"
+                size="sm"
+                class="min-w-[100px]"
+                :disabled="instance.status !== 'connected'"
+                @click="randomizeSlave(instance)"
+              >
+                Randomize
+              </Button>
+
+              <Button 
+                v-if="instance.type === 'slave'"
+                variant="outline"
+                size="sm"
+                class="min-w-[130px] transition-colors" 
+                @click="toggleAutoIncrement(instance)"
+                :disabled="instance.status !== 'connected'"
+              >
+                {{ instance.isAutoIncrement ? 'Stop Auto Incr' : 'Auto Increment' }}
+              </Button>
+
+
+              <Button 
+                v-if="instance.type === 'master'"
                 variant="outline"
                 size="sm"
                 class="min-w-[130px] transition-colors" 
@@ -513,10 +649,11 @@ const globalLogs = ref([
               </Button>
               
               <Button 
+                v-if="instance.type === 'master'"
                 variant="outline"
                 size="sm"
                 class="min-w-[100px]"
-                :disabled="instance.status !== 'connected'"
+                :disabled="instance.status !== 'connected' || instance.isAutoRead"
                 @click="readOnce(instance)"
               >
                 Read Once
@@ -528,17 +665,17 @@ const globalLogs = ref([
             <div class="px-6 py-3 border-b border-border flex flex-wrap items-center justify-between gap-4 shrink-0">
               
               <!-- Left Side: Parameter Groups -->
-              <div class="flex flex-wrap items-center gap-y-4 gap-x-8">
+              <div class="flex flex-wrap items-center gap-y-4 gap-x-5">
               
               <!-- Group 1: Addressing -->
               <div class="flex items-center gap-3 shrink-0">
                 <div class="space-y-1.5 w-[70px]">
                   <Label class="text-[11px] font-semibold text-muted-foreground">Unit ID</Label>
-                  <Input v-model="instance.slaveId" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" />
+                  <Input v-model="instance.slaveId" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" />
                 </div>
                 <div class="space-y-1.5 w-[140px]">
                   <Label class="text-[11px] font-semibold text-muted-foreground">Function</Label>
-                  <Select v-model="instance.functionCode">
+                  <Select v-model="instance.functionCode" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" @update:modelValue="onAddressingChange(instance)">
                     <SelectTrigger class="h-8 text-xs bg-background shadow-sm"><SelectValue /></SelectTrigger>
                     <SelectContent class="text-xs">
                       <SelectItem value="01">Coils (0x01)</SelectItem>
@@ -550,11 +687,11 @@ const globalLogs = ref([
                 </div>
                 <div class="space-y-1.5 w-[80px]">
                   <Label class="text-[11px] font-semibold text-muted-foreground">Start Addr</Label>
-                  <Input v-model="instance.startAddress" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" />
+                  <Input v-model="instance.startAddress" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" @change="onAddressingChange(instance)" />
                 </div>
                 <div class="space-y-1.5 w-[70px]">
                   <Label class="text-[11px] font-semibold text-muted-foreground">Count</Label>
-                  <Input v-model="instance.count" type="number" max="100" class="h-8 text-xs font-mono bg-background shadow-sm" />
+                  <Input v-model="instance.count" type="number" max="100" class="h-8 text-xs font-mono bg-background shadow-sm" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" @change="onAddressingChange(instance)" />
                 </div>
               </div>
 
@@ -563,8 +700,8 @@ const globalLogs = ref([
               <!-- Group 2: Parsing -->
               <div class="flex items-center gap-3 shrink-0">
                 <div class="space-y-1.5 w-[100px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground">Data Type</Label>
-                  <Select v-model="instance.dataType">
+                  <Label class="text-[11px] font-semibold text-muted-foreground" :class="{ 'opacity-50': instance.functionCode === '01' || instance.functionCode === '02' }">Data Type</Label>
+                  <Select v-model="instance.dataType" :disabled="instance.functionCode === '01' || instance.functionCode === '02'">
                     <SelectTrigger class="h-8 text-xs bg-background shadow-sm"><SelectValue /></SelectTrigger>
                     <SelectContent class="text-xs">
                       <SelectItem value="Int16">Int16</SelectItem>
@@ -576,8 +713,8 @@ const globalLogs = ref([
                   </Select>
                 </div>
                 <div class="space-y-1.5 w-[80px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground">Format</Label>
-                  <Select v-model="instance.format">
+                  <Label class="text-[11px] font-semibold text-muted-foreground" :class="{ 'opacity-50': instance.functionCode === '01' || instance.functionCode === '02' }">Format</Label>
+                  <Select v-model="instance.format" :disabled="instance.functionCode === '01' || instance.functionCode === '02'">
                     <SelectTrigger class="h-8 text-xs bg-background shadow-sm"><SelectValue /></SelectTrigger>
                     <SelectContent class="text-xs">
                       <SelectItem value="Dec">Dec</SelectItem>
@@ -587,8 +724,8 @@ const globalLogs = ref([
                   </Select>
                 </div>
                 <div class="space-y-1.5 w-[90px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground">Byte Order</Label>
-                  <Select v-model="instance.byteOrder">
+                  <Label class="text-[11px] font-semibold text-muted-foreground" :class="{ 'opacity-50': instance.functionCode === '01' || instance.functionCode === '02' }">Byte Order</Label>
+                  <Select v-model="instance.byteOrder" :disabled="instance.functionCode === '01' || instance.functionCode === '02'">
                     <SelectTrigger class="h-8 text-xs bg-background font-mono shadow-sm"><SelectValue /></SelectTrigger>
                     <SelectContent class="text-xs font-mono">
                       <SelectItem value="ABCD">ABCD</SelectItem>
@@ -606,7 +743,30 @@ const globalLogs = ref([
               <div class="flex items-center gap-3 shrink-0">
                 <div class="space-y-1.5 w-[90px]">
                   <Label class="text-[11px] font-semibold text-muted-foreground">Interval(ms)</Label>
-                  <Input v-model="instance.intervalMs" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" />
+                  <Input v-model="instance.intervalMs" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" />
+                </div>
+              </div>
+
+              <div class="w-px h-8 bg-border/50 hidden md:block"></div>
+
+              <!-- Group 4: Display Options -->
+              <div class="flex items-center gap-3 shrink-0">
+                <div class="space-y-1.5 flex flex-col items-center justify-center">
+                  <Label class="text-[11px] font-semibold text-muted-foreground cursor-pointer" @click="modbusStore.toggleRawData()">Raw</Label>
+                  <div class="h-8 flex items-center">
+                    <button 
+                      @click="modbusStore.toggleRawData()" 
+                      type="button" 
+                      class="relative inline-flex h-4 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 border-transparent focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background transition-colors"
+                      :class="modbusStore.showRawData ? 'bg-primary' : 'bg-input'"
+                    >
+                      <span class="sr-only">Toggle Raw Data</span>
+                      <span 
+                        class="pointer-events-none inline-block h-3 w-3 transform rounded-full bg-background shadow-lg ring-0 transition duration-200 ease-in-out"
+                        :class="modbusStore.showRawData ? 'translate-x-[0.35rem]' : '-translate-x-[0.35rem]'"
+                      />
+                    </button>
+                  </div>
                 </div>
               </div>
               </div>
@@ -644,9 +804,10 @@ const globalLogs = ref([
                             <TooltipTrigger asChild>
                               <button 
                                 @click="openWriteDialog(instance.startAddress + rIdx * 10 + cIdx, cell.value)"
-                                class="w-full h-8 font-mono text-center rounded-none bg-transparent hover:bg-muted/50 focus:bg-primary/10 focus:text-primary focus:ring-1 focus:ring-primary/50 focus:z-10 relative transition-colors text-foreground"
+                                class="w-full h-auto min-h-[36px] py-1 font-mono text-center rounded-none bg-transparent hover:bg-muted/50 focus:bg-primary/10 focus:text-primary focus:ring-1 focus:ring-primary/50 focus:z-10 relative transition-colors text-foreground flex flex-col items-center justify-center gap-0.5"
                               >
-                                {{ cell.value }}
+                                <span class="leading-none">{{ cell.value }}</span>
+                                <span v-if="modbusStore.showRawData && cell.rawValue" class="text-[10px] text-muted-foreground/70 leading-none">{{ cell.rawValue }}</span>
                               </button>
                             </TooltipTrigger>
                             <TooltipContent>
@@ -772,7 +933,12 @@ const globalLogs = ref([
             <TabsContent value="rtu" class="space-y-4 pt-4">
               <div class="grid grid-cols-4 items-center gap-4">
                 <Label class="text-right">Port Name</Label>
-                <Input v-model="tempConnectionConfig.rtuConfig.port" placeholder="COM1 or /dev/ttyS0" class="col-span-3 font-mono" />
+                <div class="col-span-3">
+                  <Input v-model="tempConnectionConfig.rtuConfig.port" placeholder="COM1 or /dev/ttyS0" class="font-mono" list="serial-ports" />
+                  <datalist id="serial-ports">
+                    <option v-for="port in availablePorts" :key="port" :value="port" />
+                  </datalist>
+                </div>
               </div>
               <div class="grid grid-cols-4 items-center gap-4">
                 <Label class="text-right">Baud Rate</Label>
@@ -808,7 +974,7 @@ const globalLogs = ref([
           <div class="grid gap-4 py-4">
             <div class="space-y-2">
               <Label>Current Value: <span class="font-mono text-muted-foreground">{{ writeTarget.currentValue }}</span></Label>
-              <Input v-model="writeTarget.newValue" type="number" class="font-mono text-lg" autofocus @keyup.enter="commitWrite" />
+              <Input v-model="writeTarget.newValue" type="number" step="any" class="font-mono text-lg" autofocus @keyup.enter="commitWrite" />
             </div>
           </div>
           <DialogFooter>

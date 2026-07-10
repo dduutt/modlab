@@ -14,24 +14,36 @@ export function DisconnectMaster(arg1) {
   return window['go']['main']['App']['DisconnectMaster'](arg1);
 }
 
-export function GetSlaveData(arg1, arg2, arg3) {
-  return window['go']['main']['App']['GetSlaveData'](arg1, arg2, arg3);
+export function GetAvailablePorts() {
+  return window['go']['main']['App']['GetAvailablePorts']();
+}
+
+export function GetSlaveData(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GetSlaveData'](arg1, arg2, arg3, arg4);
 }
 
 export function ReadRegisters(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['ReadRegisters'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function StartSlave(arg1, arg2, arg3) {
-  return window['go']['main']['App']['StartSlave'](arg1, arg2, arg3);
+export function StartSlave(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['StartSlave'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
 export function StopSlave(arg1) {
   return window['go']['main']['App']['StopSlave'](arg1);
 }
 
-export function UpdateSlaveData(arg1, arg2, arg3) {
-  return window['go']['main']['App']['UpdateSlaveData'](arg1, arg2, arg3);
+export function UpdateSlaveData(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['UpdateSlaveData'](arg1, arg2, arg3, arg4);
+}
+
+export function WriteCoil(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['WriteCoil'](arg1, arg2, arg3, arg4);
+}
+
+export function WriteMultipleCoils(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['WriteMultipleCoils'](arg1, arg2, arg3, arg4);
 }
 
 export function WriteMultipleRegisters(arg1, arg2, arg3, arg4) {

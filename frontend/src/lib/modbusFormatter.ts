@@ -66,8 +66,8 @@ export function formatRegisterValue(
       // Floats are typically displayed in Decimal, but if Hex/Bin is forced, we might just show raw bytes.
       // Usually Float32 + Hex isn't requested, but we'll handle standard float decimal rounding.
       if (format === 'Dec') {
-        // limit to 4 decimal places for clean UI
-        return Number.isInteger(valueNum) ? valueNum.toString() : parseFloat(valueNum.toFixed(4)).toString()
+        // limit to 4 decimal places for clean UI, and prevent scientific notation (e)
+        return new Intl.NumberFormat('en-US', { useGrouping: false, maximumFractionDigits: 4 }).format(valueNum)
       }
     } else if (type === 'Int32') {
       valueNum = combined
@@ -117,7 +117,8 @@ export function parseUserInput(
   // Coils
   if (functionCode === '01') {
     if (input === '1' || input.toLowerCase() === 'true' || input.toLowerCase() === 'on') return [1]
-    return [0]
+    if (input === '0' || input.toLowerCase() === 'false' || input.toLowerCase() === 'off') return [0]
+    throw new Error("Coils only accept 0 or 1")
   }
 
   let num = 0
@@ -131,6 +132,14 @@ export function parseUserInput(
   }
 
   if (isNaN(num)) throw new Error("Invalid number")
+
+  // Strictly enforce data type boundaries to prevent silent bitwise overflow truncation
+  if (format !== 'Hex' && format !== 'Bin') {
+    if (type === 'Int16' && (num < -32768 || num > 32767)) throw new Error("Overflow: Int16 must be between -32768 and 32767")
+    if (type === 'UInt16' && (num < 0 || num > 65535)) throw new Error("Overflow: UInt16 must be between 0 and 65535")
+    if (type === 'Int32' && (num < -2147483648 || num > 2147483647)) throw new Error("Overflow: Int32 must be between -2147483648 and 2147483647")
+    if (type === 'UInt32' && (num < 0 || num > 4294967295)) throw new Error("Overflow: UInt32 must be between 0 and 4294967295")
+  }
 
   if (type === 'Float32') {
     const buffer = new ArrayBuffer(4)

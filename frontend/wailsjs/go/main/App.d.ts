@@ -7,15 +7,21 @@ export function ConnectMaster(arg1:string,arg2:string,arg3:string,arg4:number,ar
 
 export function DisconnectMaster(arg1:string):Promise<void>;
 
-export function GetSlaveData(arg1:string,arg2:number,arg3:number):Promise<Array<number>>;
+export function GetAvailablePorts():Promise<Array<string>>;
+
+export function GetSlaveData(arg1:string,arg2:number,arg3:number,arg4:string):Promise<Array<number>>;
 
 export function ReadRegisters(arg1:string,arg2:number,arg3:string,arg4:number,arg5:number):Promise<Array<number>>;
 
-export function StartSlave(arg1:string,arg2:string,arg3:string):Promise<void>;
+export function StartSlave(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number,arg6:string,arg7:number):Promise<void>;
 
 export function StopSlave(arg1:string):Promise<void>;
 
-export function UpdateSlaveData(arg1:string,arg2:number,arg3:Array<number>):Promise<void>;
+export function UpdateSlaveData(arg1:string,arg2:number,arg3:Array<number>,arg4:string):Promise<void>;
+
+export function WriteCoil(arg1:string,arg2:number,arg3:number,arg4:number):Promise<void>;
+
+export function WriteMultipleCoils(arg1:string,arg2:number,arg3:number,arg4:Array<number>):Promise<void>;
 
 export function WriteMultipleRegisters(arg1:string,arg2:number,arg3:number,arg4:Array<number>):Promise<void>;
 
