@@ -3,7 +3,7 @@ module modlab
 go 1.25.0
 
 require (
-	github.com/dduutt/modbus v0.0.0-20260710073043-5db5a4036722
+	github.com/dduutt/modbus v0.0.0-20260710083316-9ca302c5e556
 	github.com/wailsapp/wails/v2 v2.12.0
 	go.bug.st/serial v1.7.1
 )
