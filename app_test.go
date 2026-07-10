@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"testing"
 	"time"
 )
@@ -127,4 +128,24 @@ func TestClearAllConnectionsReleasesServerPort(t *testing.T) {
 		t.Fatalf("Failed to restart slave on same port after cleanup: %v", err)
 	}
 	defer app.StopSlave(slaveID)
+}
+
+func TestConnectMasterTCPRequiresOpenPort(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to reserve test port: %v", err)
+	}
+	port := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("Failed to close test listener: %v", err)
+	}
+
+	app := NewApp()
+	if err := app.ConnectMaster("missing-server", "tcp", port, 9600, 8, "None", 1); err == nil {
+		t.Fatalf("Expected ConnectMaster to fail when no TCP server is listening on %s", port)
+	}
+
+	if _, err := app.ReadRegisters("missing-server", 1, "03", 0, 1); err == nil {
+		t.Fatalf("Expected missing-server client to remain disconnected after failed connect")
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"time"
 
@@ -108,15 +109,48 @@ func getStopBits(s uint) gserial.StopBits {
 	return gserial.OneStopBit
 }
 
+func newValidatedTCPTransport(address string, timeout time.Duration) (modbus.Transport, io.Closer, error) {
+	dialer := net.Dialer{Timeout: timeout}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var mu sync.Mutex
+	firstConn := conn
+	transport := modbus.NewTCPTransport(address,
+		modbus.WithTCPTimeout(timeout),
+		modbus.WithTCPDialer(func(ctx context.Context, network string, address string) (net.Conn, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if firstConn != nil {
+				conn := firstConn
+				firstConn = nil
+				return conn, nil
+			}
+			return dialer.DialContext(ctx, network, address)
+		}),
+	)
+
+	return transport, conn, nil
+}
+
 // ConnectMaster creates and connects a Modbus Client
 func (a *App) ConnectMaster(id string, protocol string, address string, rtuBaudRate uint, rtuDataBits uint, rtuParity string, rtuStopBits uint) error {
 	a.DisconnectMaster(id)
 
 	var transport modbus.Transport
-	var conn io.ReadWriteCloser
+	var conn io.Closer
+	var err error
 
 	if protocol == "tcp" {
-		transport = modbus.NewTCPTransport(address, modbus.WithTCPTimeout(2*time.Second))
+		transport, conn, err = newValidatedTCPTransport(address, 2*time.Second)
+		if err != nil {
+			return err
+		}
 	} else {
 		mode := &gserial.Mode{
 			BaudRate: int(rtuBaudRate),
