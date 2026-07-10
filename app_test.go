@@ -64,10 +64,6 @@ func TestMasterSlaveCommunication(t *testing.T) {
 
 	// 4. Test Coils (Read/Write)
 	t.Run("Coils", func(t *testing.T) {
-		// Master writes a single coil to ON (0xFF00)
-		// Our app.go doesn't have a specific `WriteCoil` function exposed yet for Master?
-		// Wait, app.go `WriteRegister` only does Holding Register. We might need to manually update slave memory to test coil reading.
-		
 		err := app.UpdateSlaveData(slaveID, 20, []uint16{1, 0, 1}, "01")
 		if err != nil {
 			t.Fatalf("Failed to update slave coils: %v", err)
@@ -91,11 +87,44 @@ func TestMasterSlaveCommunication(t *testing.T) {
 			t.Fatalf("Failed to read coils from master: %v", err)
 		}
 		for i, v := range expectedCoils {
-			// Master returns bools mapped to 1/0? Let's check how app.ReadRegisters handles "01"
-			// Wait, app.go ReadRegisters handles "01" by returning []uint16{1 or 0}
 			if readData[i] != v {
 				t.Errorf("Master coil read mismatch at offset %d: expected %v, got %v", i, v, readData[i])
 			}
 		}
+
+		err = app.WriteCoil(masterID, 1, 21, 1)
+		if err != nil {
+			t.Fatalf("Failed to write coil from master: %v", err)
+		}
+
+		slaveCoils, err = app.GetSlaveData(slaveID, 20, 3, "01")
+		if err != nil {
+			t.Fatalf("Failed to get slave coils after master write: %v", err)
+		}
+		if slaveCoils[1] != 1 {
+			t.Errorf("Master coil write mismatch at address 21: expected 1, got %v", slaveCoils[1])
+		}
 	})
+}
+
+func TestClearAllConnectionsReleasesServerPort(t *testing.T) {
+	app := NewApp()
+
+	slaveID := "cleanup-slave"
+	port := "127.0.0.1:10503"
+
+	if err := app.StartSlave(slaveID, "tcp", port, 9600, 8, "N", 1); err != nil {
+		t.Fatalf("Failed to start slave: %v", err)
+	}
+
+	if err := app.ClearAllConnections(); err != nil {
+		t.Fatalf("Failed to clear connections: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := app.StartSlave(slaveID, "tcp", port, 9600, 8, "N", 1); err != nil {
+		t.Fatalf("Failed to restart slave on same port after cleanup: %v", err)
+	}
+	defer app.StopSlave(slaveID)
 }

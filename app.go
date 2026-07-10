@@ -70,6 +70,9 @@ func (a *App) ClearAllConnections() error {
 	a.servers.Range(func(key, value interface{}) bool {
 		si := value.(*ServerInstance)
 		si.cancel()
+		if si.handle != nil {
+			si.handle.Close()
+		}
 		if si.conn != nil {
 			si.conn.Close()
 		}
@@ -285,7 +288,13 @@ func (w *WrappedDataStore) WriteCoils(address uint16, values []bool) error {
 	err := w.store.WriteCoils(address, values)
 	if err == nil {
 		if w.ctx != nil {
-			runtime.EventsEmit(w.ctx, "slave_write", w.id, address, []uint16{})
+			payload := make([]uint16, len(values))
+			for i, v := range values {
+				if v {
+					payload[i] = 1
+				}
+			}
+			runtime.EventsEmit(w.ctx, "slave_write", w.id, address, payload)
 		}
 	}
 	return err
@@ -370,25 +379,24 @@ func (a *App) StopSlave(id string) error {
 func (a *App) UpdateSlaveData(id string, address uint16, values []uint16, functionCode string) error {
 	if val, ok := a.servers.Load(id); ok {
 		si := val.(*ServerInstance)
-		
+
 		if functionCode == "01" || functionCode == "02" {
 			bools := make([]bool, len(values))
 			for i, v := range values {
 				bools[i] = (v > 0)
 			}
 			if functionCode == "01" {
-				si.store.WriteCoils(address, bools)
+				return si.store.WriteCoils(address, bools)
 			} else {
-				si.store.WriteDiscreteInputs(address, bools)
+				return si.store.WriteDiscreteInputs(address, bools)
 			}
 		} else {
 			if functionCode == "03" {
-				si.store.WriteHoldingRegisters(address, values)
+				return si.store.WriteHoldingRegisters(address, values)
 			} else {
-				si.store.WriteInputRegisters(address, values)
+				return si.store.WriteInputRegisters(address, values)
 			}
 		}
-		return nil
 	}
 	return fmt.Errorf("slave memory not found")
 }

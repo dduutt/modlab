@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Plus, X, Terminal, Server, MonitorSmartphone, Settings2, Check } from '@lucide/vue'
-import { ConnectMaster, DisconnectMaster, ReadRegisters, WriteRegister, WriteMultipleRegisters, StartSlave, StopSlave, GetSlaveData, UpdateSlaveData, ClearAllConnections, GetAvailablePorts } from '../wailsjs/go/main/App'
+import { ConnectMaster, DisconnectMaster, ReadRegisters, WriteRegister, WriteMultipleRegisters, WriteCoil, WriteMultipleCoils, StartSlave, StopSlave, GetSlaveData, UpdateSlaveData, ClearAllConnections, GetAvailablePorts } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 import { formatRegisterValue, parseUserInput } from './lib/modbusFormatter'
 
@@ -231,13 +231,13 @@ const commitWrite = async () => {
       const isCoil = inst.functionCode === '01'
       if (parsedValues.length === 1) {
         if (isCoil) {
-          await (window as any).go.main.App.WriteCoil(inst.id, inst.slaveId, writeTarget.value.address, parsedValues[0])
+          await WriteCoil(inst.id, inst.slaveId, writeTarget.value.address, parsedValues[0])
         } else {
           await WriteRegister(inst.id, inst.slaveId, writeTarget.value.address, parsedValues[0])
         }
       } else {
         if (isCoil) {
-          await (window as any).go.main.App.WriteMultipleCoils(inst.id, inst.slaveId, writeTarget.value.address, parsedValues)
+          await WriteMultipleCoils(inst.id, inst.slaveId, writeTarget.value.address, parsedValues)
         } else {
           await WriteMultipleRegisters(inst.id, inst.slaveId, writeTarget.value.address, parsedValues)
         }
@@ -966,7 +966,7 @@ const globalLogs = ref([
       <Dialog v-model:open="showWriteDialog">
         <DialogContent class="sm:max-w-[320px]">
           <DialogHeader>
-            <DialogTitle>Write Register</DialogTitle>
+            <DialogTitle>Write Value</DialogTitle>
             <DialogDescription>
               Address: <span class="font-mono font-bold text-primary">{{ writeTarget.address }}</span>
             </DialogDescription>
@@ -974,7 +974,7 @@ const globalLogs = ref([
           <div class="grid gap-4 py-4">
             <div class="space-y-2">
               <Label>Current Value: <span class="font-mono text-muted-foreground">{{ writeTarget.currentValue }}</span></Label>
-              <Input v-model="writeTarget.newValue" type="number" step="any" class="font-mono text-lg" autofocus @keyup.enter="commitWrite" />
+              <Input v-model="writeTarget.newValue" type="text" class="font-mono text-lg" autofocus @keyup.enter="commitWrite" />
             </div>
           </div>
           <DialogFooter>
