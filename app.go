@@ -414,22 +414,22 @@ func (a *App) UpdateSlaveData(id string, address uint16, values []uint16, functi
 	if val, ok := a.servers.Load(id); ok {
 		si := val.(*ServerInstance)
 
-		if functionCode == "01" || functionCode == "02" {
+		switch functionCode {
+		case "01", "02":
 			bools := make([]bool, len(values))
 			for i, v := range values {
 				bools[i] = (v > 0)
 			}
 			if functionCode == "01" {
 				return si.store.WriteCoils(address, bools)
-			} else {
-				return si.store.WriteDiscreteInputs(address, bools)
 			}
-		} else {
-			if functionCode == "03" {
-				return si.store.WriteHoldingRegisters(address, values)
-			} else {
-				return si.store.WriteInputRegisters(address, values)
-			}
+			return si.store.WriteDiscreteInputs(address, bools)
+		case "03":
+			return si.store.WriteHoldingRegisters(address, values)
+		case "04":
+			return si.store.WriteInputRegisters(address, values)
+		default:
+			return fmt.Errorf("unsupported function code %q", functionCode)
 		}
 	}
 	return fmt.Errorf("slave memory not found")
@@ -439,7 +439,8 @@ func (a *App) UpdateSlaveData(id string, address uint16, values []uint16, functi
 func (a *App) GetSlaveData(id string, address uint16, count uint16, functionCode string) ([]uint16, error) {
 	if val, ok := a.servers.Load(id); ok {
 		si := val.(*ServerInstance)
-		if functionCode == "01" || functionCode == "02" {
+		switch functionCode {
+		case "01", "02":
 			var bools []bool
 			var err error
 			if functionCode == "01" {
@@ -457,12 +458,12 @@ func (a *App) GetSlaveData(id string, address uint16, count uint16, functionCode
 				}
 			}
 			return res, nil
-		} else {
-			if functionCode == "03" {
-				return si.store.ReadHoldingRegisters(address, count)
-			} else {
-				return si.store.ReadInputRegisters(address, count)
-			}
+		case "03":
+			return si.store.ReadHoldingRegisters(address, count)
+		case "04":
+			return si.store.ReadInputRegisters(address, count)
+		default:
+			return nil, fmt.Errorf("unsupported function code %q", functionCode)
 		}
 	}
 	return nil, fmt.Errorf("slave memory not found")

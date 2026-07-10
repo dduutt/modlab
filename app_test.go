@@ -149,3 +149,22 @@ func TestConnectMasterTCPRequiresOpenPort(t *testing.T) {
 		t.Fatalf("Expected missing-server client to remain disconnected after failed connect")
 	}
 }
+
+func TestSlaveDataRejectsUnsupportedFunctionCode(t *testing.T) {
+	app := NewApp()
+	slaveID := "function-code-slave"
+	port := "127.0.0.1:10504"
+
+	if err := app.StartSlave(slaveID, "tcp", port, 9600, 8, "N", 1); err != nil {
+		t.Fatalf("Failed to start slave: %v", err)
+	}
+	defer app.StopSlave(slaveID)
+
+	if err := app.UpdateSlaveData(slaveID, 0, []uint16{1}, "99"); err == nil {
+		t.Fatalf("Expected UpdateSlaveData to reject unsupported function code")
+	}
+
+	if _, err := app.GetSlaveData(slaveID, 0, 1, "99"); err == nil {
+		t.Fatalf("Expected GetSlaveData to reject unsupported function code")
+	}
+}

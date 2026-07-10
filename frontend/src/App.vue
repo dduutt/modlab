@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { Plus, X, Terminal, Server, MonitorSmartphone, Settings2, Check } from '@lucide/vue'
+import { Plus, X, Server, MonitorSmartphone, Settings2, Check } from '@lucide/vue'
 import { ConnectMaster, DisconnectMaster, ReadRegisters, WriteRegister, WriteMultipleRegisters, WriteCoil, WriteMultipleCoils, StartSlave, StopSlave, GetSlaveData, UpdateSlaveData, ClearAllConnections, GetAvailablePorts } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 import { formatRegisterValue, parseUserInput } from './lib/modbusFormatter'
@@ -12,7 +12,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 // Types
@@ -34,7 +33,6 @@ const getConnectionInfoText = (inst: ModbusInstance) => {
 const showAddDialog = ref(false)
 const showConnectionDialog = ref(false)
 const showWriteDialog = ref(false)
-const showLogDialog = ref(false)
 
 // Connection Setup temporary state
 const tempConnectionConfig = ref<any>({})
@@ -54,6 +52,19 @@ const fetchPorts = async () => {
 const systemStatus = ref({ text: 'System Ready.', type: 'info' as 'info' | 'success' | 'error' })
 const setStatus = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
   systemStatus.value = { text, type }
+}
+
+const markMasterError = async (inst: ModbusInstance) => {
+  if (inst.type !== 'master') return
+  inst.status = 'disconnected'
+  inst.hasError = true
+  inst.isAutoRead = false
+  stopPolling(inst.id)
+  try {
+    await DisconnectMaster(inst.id)
+  } catch (disconnectErr) {
+    console.error(disconnectErr)
+  }
 }
 
 const openConnectionDialog = async () => {
@@ -150,6 +161,7 @@ const readOnce = async (inst: ModbusInstance) => {
         }
       }
     } catch (e) {
+      await markMasterError(inst)
       setStatus(`[${inst.name}] Read error: ${e}`, 'error')
     }
 }
@@ -248,7 +260,13 @@ const commitWrite = async () => {
     }
     readOnce(inst)
   } catch (e) {
-    setStatus(`[${activeInstance.value!.name}] Write failed: ${e}`, 'error')
+    const inst = activeInstance.value
+    if (inst) {
+      await markMasterError(inst)
+      setStatus(`[${inst.name}] Write failed: ${e}`, 'error')
+    } else {
+      setStatus(`Write failed: ${e}`, 'error')
+    }
   }
   showWriteDialog.value = false
 }
@@ -488,7 +506,6 @@ const removeInstance = (id: string, event: Event) => {
   }
 }
 
-// Generate Mock Data for 11-column matrix
 const getMatrixRows = (instance: ModbusInstance) => {
   const rowCount = Math.ceil(instance.count / 10)
   const isCoil = instance.functionCode === '01' || instance.functionCode === '02'
@@ -498,9 +515,11 @@ const getMatrixRows = (instance: ModbusInstance) => {
     return Array.from({ length: 10 }).map((_, cIndex) => {
       const addr = rIndex * 10 + cIndex
       let val = null
+      let writable = addr < instance.count
       if (addr < instance.count) {
         if (is32Bit && addr % 2 !== 0) {
           val = '-'
+          writable = false
         } else {
           val = formatRegisterValue(instance.data, addr, instance.dataType, instance.format, instance.byteOrder, instance.functionCode)
         }
@@ -512,17 +531,12 @@ const getMatrixRows = (instance: ModbusInstance) => {
       return {
         address: addr,
         value: val,
-        rawValue: rawVal
+        rawValue: rawVal,
+        writable
       }
     })
   })
 }
-
-// Global Logs Mock Data
-const globalLogs = ref([
-  { time: '10:45:01.120', type: 'TX', target: 'Master 1', data: '00 01 00 00 00 06 01 03 00 00 00 0A' },
-  { time: '10:45:01.145', type: 'RX', target: 'Master 1', data: '00 01 00 00 00 17 01 03 14 00 00 00 00 ...' },
-])
 </script>
 
 <template>
@@ -800,7 +814,7 @@ const globalLogs = ref([
                         
                         <!-- Data Cells -->
                         <TableCell v-for="(cell, cIdx) in row" :key="cIdx" class="p-0 border-b border-r border-border">
-                          <Tooltip v-if="cell.value !== null">
+                          <Tooltip v-if="cell.value !== null && cell.writable">
                             <TooltipTrigger asChild>
                               <button 
                                 @click="openWriteDialog(instance.startAddress + rIdx * 10 + cIdx, cell.value)"
@@ -814,6 +828,10 @@ const globalLogs = ref([
                               <p>Click to write to address <span class="font-mono text-primary">{{ instance.startAddress + rIdx * 10 + cIdx }}</span></p>
                             </TooltipContent>
                           </Tooltip>
+                          <div v-else-if="cell.value !== null" class="w-full min-h-[36px] py-1 font-mono text-center text-muted-foreground flex flex-col items-center justify-center gap-0.5">
+                            <span class="leading-none">{{ cell.value }}</span>
+                            <span v-if="modbusStore.showRawData && cell.rawValue" class="text-[10px] text-muted-foreground/70 leading-none">{{ cell.rawValue }}</span>
+                          </div>
                           <div v-else class="w-full h-8 bg-muted/5"></div>
                         </TableCell>
                       </TableRow>
@@ -850,10 +868,6 @@ const globalLogs = ref([
           </span>
         </div>
         
-        <Button variant="ghost" size="sm" @click="showLogDialog = true" class="h-7 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted ring-1 ring-border/50 shadow-sm px-3 rounded-lg">
-          <Terminal class="w-3.5 h-3.5 mr-1.5" />
-          Global Log Console
-        </Button>
       </footer>
 
       <!-- Add Instance Dialog -->
@@ -984,27 +998,6 @@ const globalLogs = ref([
         </DialogContent>
       </Dialog>
 
-      <!-- Global Log Dialog -->
-      <Dialog v-model:open="showLogDialog">
-        <DialogContent class="sm:max-w-[700px]">
-          <DialogHeader>
-            <DialogTitle>Global Log Console</DialogTitle>
-            <DialogDescription>
-              Raw Modbus traffic for all instances.
-            </DialogDescription>
-          </DialogHeader>
-          
-          <ScrollArea class="h-[400px] w-full rounded-md border bg-black text-emerald-400 p-4 font-mono text-xs">
-            <div v-for="(log, i) in globalLogs" :key="i" class="mb-2 flex gap-3">
-              <span class="text-zinc-500 shrink-0">[{{ log.time }}]</span>
-              <span :class="log.type === 'TX' ? 'text-blue-400' : 'text-emerald-400'" class="font-bold shrink-0">{{ log.type }}</span>
-              <span class="text-zinc-400 shrink-0 w-16 truncate">{{ log.target }}</span>
-              <span class="text-zinc-300 break-all">{{ log.data }}</span>
-            </div>
-            <ScrollBar orientation="vertical" />
-          </ScrollArea>
-        </DialogContent>
-      </Dialog>
     </div>
   </TooltipProvider>
 </template>
