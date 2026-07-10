@@ -22,6 +22,7 @@ type ServerInstance struct {
 
 type ClientInstance struct {
 	transport modbus.Transport
+	client    *modbus.Client
 	conn      io.Closer
 }
 
@@ -113,11 +114,12 @@ func (a *App) ConnectMaster(id string, protocol string, address string, rtuBaudR
 	a.DisconnectMaster(id)
 
 	var transport modbus.Transport
+	var client *modbus.Client
 	var conn io.Closer
 
 	if protocol == "tcp" {
 		transport = modbus.NewTCPTransport(address, modbus.WithTCPTimeout(2*time.Second))
-		client := modbus.NewClient(transport, modbus.WithTimeout(2*time.Second))
+		client = modbus.NewClient(transport, modbus.WithTimeout(2*time.Second))
 		if err := client.Connect(context.Background()); err != nil {
 			transport.Close()
 			return err
@@ -135,10 +137,12 @@ func (a *App) ConnectMaster(id string, protocol string, address string, rtuBaudR
 		}
 		conn = port
 		transport = modbus.NewRTUTransport(port, modbus.WithRTUTimeout(2*time.Second))
+		client = modbus.NewClient(transport, modbus.WithTimeout(2*time.Second))
 	}
 
 	a.clients.Store(id, &ClientInstance{
 		transport: transport,
+		client:    client,
 		conn:      conn,
 	})
 	return nil
@@ -165,7 +169,7 @@ func (a *App) ReadRegisters(id string, unitId uint8, functionCode string, addres
 	}
 
 	ci := val.(*ClientInstance)
-	client := modbus.NewClient(ci.transport, modbus.WithUnitID(unitId))
+	client := ci.client.ForUnit(unitId)
 	ctx := context.Background()
 
 	switch functionCode {
@@ -209,7 +213,7 @@ func (a *App) WriteRegister(id string, unitId uint8, address uint16, value uint1
 	}
 
 	ci := val.(*ClientInstance)
-	client := modbus.NewClient(ci.transport, modbus.WithUnitID(unitId))
+	client := ci.client.ForUnit(unitId)
 	ctx := context.Background()
 
 	return client.WriteSingleRegister(ctx, address, value)
@@ -223,7 +227,7 @@ func (a *App) WriteMultipleRegisters(id string, unitId uint8, address uint16, va
 	}
 
 	ci := val.(*ClientInstance)
-	client := modbus.NewClient(ci.transport, modbus.WithUnitID(unitId))
+	client := ci.client.ForUnit(unitId)
 	ctx := context.Background()
 
 	return client.WriteMultipleRegisters(ctx, address, values)
@@ -237,7 +241,7 @@ func (a *App) WriteCoil(id string, unitId uint8, address uint16, value uint16) e
 	}
 
 	ci := val.(*ClientInstance)
-	client := modbus.NewClient(ci.transport, modbus.WithUnitID(unitId))
+	client := ci.client.ForUnit(unitId)
 	ctx := context.Background()
 
 	return client.WriteSingleCoil(ctx, address, value > 0)
@@ -251,7 +255,7 @@ func (a *App) WriteMultipleCoils(id string, unitId uint8, address uint16, values
 	}
 
 	ci := val.(*ClientInstance)
-	client := modbus.NewClient(ci.transport, modbus.WithUnitID(unitId))
+	client := ci.client.ForUnit(unitId)
 	ctx := context.Background()
 
 	bools := make([]bool, len(values))

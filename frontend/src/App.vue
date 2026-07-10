@@ -877,7 +877,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
             {{ systemStatus.text }}
           </span>
         </div>
-        
+        <span class="text-muted-foreground whitespace-nowrap">© Modlab · dote27@163.com</span>
       </footer>
 
       <!-- Add Instance Dialog -->
