@@ -582,7 +582,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                     v-if="instances.length > 1"
                     @click.stop="removeInstance(instance.id, $event)"
                     class="w-4 h-4 ml-1.5 shrink-0 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-destructive/15 hover:text-destructive transition-colors duration-200"
-                    title="Close Connection"
+                    title="Close"
                   >
                     <X class="w-3 h-3" />
                   </div>
@@ -598,7 +598,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    <p>Add Connection Instance</p>
+                    <p>Add Connection</p>
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -633,7 +633,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
               </Button>
 
               <Button variant="outline" size="sm" class="min-w-[90px]" @click="openConnectionDialog" :disabled="instance.status === 'connected'">
-                <Settings2 class="w-4 h-4 mr-2 text-muted-foreground" /> Setup
+                <Settings2 class="w-4 h-4 mr-2 text-muted-foreground" /> Settings
               </Button>
             </div>
 
@@ -646,7 +646,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 :disabled="instance.status !== 'connected'"
                 @click="randomizeSlave(instance)"
               >
-                Randomize
+                Random
               </Button>
 
               <Button 
@@ -657,7 +657,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 @click="toggleAutoIncrement(instance)"
                 :disabled="instance.status !== 'connected'"
               >
-                {{ instance.isAutoIncrement ? 'Stop Auto Incr' : 'Auto Increment' }}
+                {{ instance.isAutoIncrement ? 'Stop +1' : 'Auto +1' }}
               </Button>
 
 
@@ -669,7 +669,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 @click="toggleAutoRead(instance)"
                 :disabled="instance.status !== 'connected'"
               >
-                {{ instance.isAutoRead ? 'Stop Auto Read' : 'Auto Read' }}
+                {{ instance.isAutoRead ? 'Stop Poll' : 'Start Poll' }}
               </Button>
               
               <Button 
@@ -680,7 +680,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 :disabled="instance.status !== 'connected' || instance.isAutoRead"
                 @click="readOnce(instance)"
               >
-                Read Once
+                Read
               </Button>
             </div>
             </div>
@@ -710,7 +710,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                   </Select>
                 </div>
                 <div class="space-y-1.5 w-[80px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground">Start Addr</Label>
+                  <Label class="text-[11px] font-semibold text-muted-foreground">Start</Label>
                   <Input v-model="instance.startAddress" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" @change="onAddressingChange(instance)" />
                 </div>
                 <div class="space-y-1.5 w-[70px]">
@@ -766,7 +766,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
               <!-- Group 3: Polling Settings -->
               <div class="flex items-center gap-3 shrink-0">
                 <div class="space-y-1.5 w-[90px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground">Interval(ms)</Label>
+                  <Label class="text-[11px] font-semibold text-muted-foreground">Interval</Label>
                   <Input v-model="instance.intervalMs" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" />
                 </div>
               </div>
@@ -835,7 +835,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                               </button>
                             </TooltipTrigger>
                             <TooltipContent>
-                              <p>Click to write to address <span class="font-mono text-primary">{{ instance.startAddress + rIdx * 10 + cIdx }}</span></p>
+                              <p>Write address <span class="font-mono text-primary">{{ instance.startAddress + rIdx * 10 + cIdx }}</span></p>
                             </TooltipContent>
                           </Tooltip>
                           <div v-else-if="cell.value !== null" class="w-full min-h-[36px] py-1 font-mono text-center text-muted-foreground flex flex-col items-center justify-center gap-0.5">
@@ -884,17 +884,17 @@ const getMatrixRows = (instance: ModbusInstance) => {
       <Dialog v-model:open="showAddDialog">
         <DialogContent class="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Add New Connection</DialogTitle>
+            <DialogTitle>Add Connection</DialogTitle>
             <DialogDescription>
-              Choose the type of Modbus instance you want to create.
+              Choose a role.
             </DialogDescription>
           </DialogHeader>
           <div class="grid gap-4 py-4">
             <div class="space-y-2 mb-2">
-              <Label :class="{ 'text-destructive': nameError }">Connection Name</Label>
+              <Label :class="{ 'text-destructive': nameError }">Name</Label>
               <Input 
                 v-model="newInstanceName" 
-                placeholder="e.g. Pump Station 1 (Optional)" 
+                placeholder="Pump Station 1 (optional)"
                 autofocus 
                 @keyup.enter="addInstance('master')" 
                 :class="{ 'border-destructive focus-visible:ring-destructive': nameError }"
@@ -902,7 +902,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
               <p v-if="nameError" class="text-[11px] font-medium text-destructive mt-1">{{ nameError }}</p>
             </div>
             
-            <Label class="text-muted-foreground">Select Role to Create</Label>
+            <Label class="text-muted-foreground">Role</Label>
             <div class="grid grid-cols-2 gap-4">
               <Button 
                 variant="outline" 
@@ -910,7 +910,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 @click="addInstance('master')"
               >
                 <MonitorSmartphone class="w-8 h-8" />
-                <span class="font-semibold">Master (Client)</span>
+                <span class="font-semibold">Master</span>
               </Button>
               <Button 
                 variant="outline" 
@@ -918,7 +918,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 @click="addInstance('slave')"
               >
                 <Server class="w-8 h-8" />
-                <span class="font-semibold">Slave (Server)</span>
+                <span class="font-semibold">Slave</span>
               </Button>
             </div>
           </div>
@@ -929,9 +929,9 @@ const getMatrixRows = (instance: ModbusInstance) => {
       <Dialog v-model:open="showConnectionDialog">
         <DialogContent class="sm:max-w-[425px]">
           <DialogHeader>
-            <DialogTitle>Connection Setup</DialogTitle>
+            <DialogTitle>Connection</DialogTitle>
             <DialogDescription>
-              Configure network or serial parameters for this instance.
+              Set TCP or serial parameters.
             </DialogDescription>
           </DialogHeader>
           
@@ -944,7 +944,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
             <!-- TCP Config -->
             <TabsContent value="tcp" class="space-y-4 pt-4">
               <div class="grid grid-cols-4 items-center gap-4">
-                <Label class="text-right">IP Address</Label>
+                <Label class="text-right">IP</Label>
                 <Input v-model="tempConnectionConfig.tcpConfig.ip" class="col-span-3 font-mono" />
               </div>
               <div class="grid grid-cols-4 items-center gap-4">
@@ -956,7 +956,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
             <!-- RTU Config -->
             <TabsContent value="rtu" class="space-y-4 pt-4">
               <div class="grid grid-cols-4 items-center gap-4">
-                <Label class="text-right">Port Name</Label>
+                <Label class="text-right">Port</Label>
                 <div class="col-span-3">
                   <Input v-model="tempConnectionConfig.rtuConfig.port" placeholder="COM1 or /dev/ttyS0" class="font-mono" list="serial-ports" />
                   <datalist id="serial-ports">
@@ -981,7 +981,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
 
           <DialogFooter class="mt-4">
             <Button variant="outline" @click="showConnectionDialog = false">Cancel</Button>
-            <Button @click="saveConnectionConfig">Save Changes</Button>
+            <Button @click="saveConnectionConfig">Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -990,14 +990,14 @@ const getMatrixRows = (instance: ModbusInstance) => {
       <Dialog v-model:open="showWriteDialog">
         <DialogContent class="sm:max-w-[320px]">
           <DialogHeader>
-            <DialogTitle>Write Value</DialogTitle>
+            <DialogTitle>Write</DialogTitle>
             <DialogDescription>
               Address: <span class="font-mono font-bold text-primary">{{ writeTarget.address }}</span>
             </DialogDescription>
           </DialogHeader>
           <div class="grid gap-4 py-4">
             <div class="space-y-2">
-              <Label>Current Value: <span class="font-mono text-muted-foreground">{{ writeTarget.currentValue }}</span></Label>
+              <Label>Current: <span class="font-mono text-muted-foreground">{{ writeTarget.currentValue }}</span></Label>
               <Input v-model="writeTarget.newValue" type="text" class="font-mono text-lg" autofocus @keyup.enter="commitWrite" />
             </div>
           </div>
