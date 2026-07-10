@@ -657,7 +657,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 @click="toggleAutoIncrement(instance)"
                 :disabled="instance.status !== 'connected'"
               >
-                {{ instance.isAutoIncrement ? 'Stop +1' : 'Auto +1' }}
+                {{ instance.isAutoIncrement ? 'Stop Increment' : 'Increment' }}
               </Button>
 
 
