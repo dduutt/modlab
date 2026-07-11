@@ -979,7 +979,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
 
       <!-- Connection Setup Dialog -->
       <Dialog v-model:open="showConnectionDialog">
-        <DialogContent class="sm:max-w-[480px]">
+        <DialogContent class="sm:w-[480px] sm:max-w-[480px] sm:h-[440px] grid-rows-[auto_1fr_auto]">
           <DialogHeader>
             <DialogTitle>Connection</DialogTitle>
             <DialogDescription>
@@ -987,7 +987,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
             </DialogDescription>
           </DialogHeader>
           
-          <Tabs v-model="tempConnectionConfig.protocol" class="mt-2">
+          <Tabs v-model="tempConnectionConfig.protocol" class="mt-2 min-h-0">
             <TabsList class="grid w-full grid-cols-2">
               <TabsTrigger value="tcp">Modbus TCP</TabsTrigger>
               <TabsTrigger value="rtu">Modbus RTU</TabsTrigger>
@@ -1071,7 +1071,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
             </TabsContent>
           </Tabs>
 
-          <DialogFooter class="mt-4">
+          <DialogFooter>
             <Button variant="outline" @click="showConnectionDialog = false">Cancel</Button>
             <Button @click="saveConnectionConfig" :disabled="!canSaveConnection">Save</Button>
           </DialogFooter>
