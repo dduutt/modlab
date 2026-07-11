@@ -4,6 +4,8 @@ Modlab 是一个 Modbus 调试和模拟工具，基于 Wails 开发。
 
 它可以作为主机连接设备读取数据，也可以作为从机模拟设备响应请求。
 
+![Modlab main window](docs/images/main-window.png)
+
 ## 主要功能
 
 - 支持 Modbus TCP 和 Modbus RTU。
