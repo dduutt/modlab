@@ -1,38 +1,43 @@
 # Modlab
 
-Modlab 是一款基于 Wails 构建的跨平台 Modbus 调试与模拟工具，支持作为主机（Client）轮询设备，或作为从机（Server）模拟数据响应。
+Modlab 是一个 Modbus 调试和模拟工具，基于 Wails 开发。
 
-## 特性
+它可以作为主机连接设备读取数据，也可以作为从机模拟设备响应请求。
 
-- **协议支持**：Modbus TCP、Modbus RTU (串口)。
-- **工作模式**：
-  - **主机模式**：支持按指定频率自动读取、单次读取，支持修改远程设备数据。
-  - **从机模拟**：支持本地开启 TCP/RTU 服务，支持自动累加数据以便模拟传感器流。
-- **数据管理**：
-  - 支持线圈 (01)、离散输入 (02)、保持寄存器 (03)、输入寄存器 (04)。
-  - 四个数据区各自独立，符合标准 Modbus 规范，对 02 和 04 区域实施严格的写保护。
-- **数据格式解析**：
-  - 支持 Int16、UInt16、Int32、UInt32、Float32。
-  - 支持字节序 (Byte Order) 切换：ABCD、CDAB、DCBA、BADC。
-  - 支持格式化显示：十进制、十六进制、二进制及原始 Hex 数据。
+## 主要功能
 
+- 支持 Modbus TCP 和 Modbus RTU。
+- 支持创建多个连接，每个连接可以单独配置。
+- 支持主机模式和从机模式。
+- 主机模式支持连接、断开、单次读取和定时轮询。
+- 主机模式支持写入线圈和保持寄存器。
+- 从机模式支持启动本地模拟服务。
+- 从机模式支持随机生成数据和递增数据，方便观察读数变化。
+- 支持按从机地址、功能码、起始地址和数量读取数据。
+- 支持显示原始数据。
 
+## 支持的数据区
 
-## 功能码支持
+- 线圈：0x01
+- 离散输入：0x02
+- 保持寄存器：0x03
+- 输入寄存器：0x04
 
-| 功能码 | 描述 |
-| :---: | --- |
-| 0x01 | Read Coils (读线圈) |
-| 0x02 | Read Discrete Inputs (读离散输入) |
-| 0x03 | Read Holding Registers (读保持寄存器) |
-| 0x04 | Read Input Registers (读输入寄存器) |
-| 0x05 | Write Single Coil (写单个线圈) |
-| 0x06 | Write Single Register (写单个寄存器) |
-| 0x0F | Write Multiple Coils (写多个线圈) |
-| 0x10 | Write Multiple Registers (写多个寄存器) |
+离散输入和输入寄存器按只读区域处理，不支持写入。
 
-## 技术栈
+## 支持的写入功能
 
-- 前端：Vue 3 + Vite + Tailwind CSS + Pinia
-- 后端：Go + Wails v2
-- 依赖库：`github.com/dduutt/modbus`、`go.bug.st/serial`
+- 写单个线圈：0x05
+- 写单个寄存器：0x06
+- 写多个线圈：0x0F
+- 写多个寄存器：0x10
+
+## 数据显示
+
+- 支持 Int16、UInt16、Int32、UInt32、Float32。
+- 支持十进制、十六进制和二进制显示。
+- 支持字节序切换：ABCD、CDAB、DCBA、BADC。
+
+## 作者
+
+dote27@163.com
