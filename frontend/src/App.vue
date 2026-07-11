@@ -1037,6 +1037,37 @@ const getMatrixRows = (instance: ModbusInstance) => {
                   </SelectContent>
                 </Select>
               </div>
+              <div class="grid grid-cols-4 items-center gap-4">
+                <Label class="text-right">Data Bits</Label>
+                <Select v-model="tempConnectionConfig.rtuConfig.dataBits">
+                  <SelectTrigger class="col-span-3"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem :value="7">7</SelectItem>
+                    <SelectItem :value="8">8</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div class="grid grid-cols-4 items-center gap-4">
+                <Label class="text-right">Parity</Label>
+                <Select v-model="tempConnectionConfig.rtuConfig.parity">
+                  <SelectTrigger class="col-span-3"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="None">None</SelectItem>
+                    <SelectItem value="Even">Even</SelectItem>
+                    <SelectItem value="Odd">Odd</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div class="grid grid-cols-4 items-center gap-4">
+                <Label class="text-right">Stop Bits</Label>
+                <Select v-model="tempConnectionConfig.rtuConfig.stopBits">
+                  <SelectTrigger class="col-span-3"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem :value="1">1</SelectItem>
+                    <SelectItem :value="2">2</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </TabsContent>
           </Tabs>
 
