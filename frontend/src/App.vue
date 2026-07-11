@@ -39,14 +39,47 @@ const tempConnectionConfig = ref<any>({})
 
 // Available Serial Ports
 const availablePorts = ref<string[]>([])
+let portPollingTimer: any = null
+
+const syncSelectedSerialPort = () => {
+  if (!tempConnectionConfig.value?.rtuConfig) return
+
+  if (availablePorts.value.length === 0) {
+    tempConnectionConfig.value.rtuConfig.port = ''
+    return
+  }
+
+  if (!availablePorts.value.includes(tempConnectionConfig.value.rtuConfig.port)) {
+    tempConnectionConfig.value.rtuConfig.port = availablePorts.value[0]
+  }
+}
+
 const fetchPorts = async () => {
   try {
     const ports = await GetAvailablePorts()
     availablePorts.value = ports || []
+    syncSelectedSerialPort()
   } catch(e) {
     console.error("Failed to fetch ports", e)
   }
 }
+
+const startPortPolling = () => {
+  stopPortPolling()
+  fetchPorts()
+  portPollingTimer = setInterval(fetchPorts, 2000)
+}
+
+const stopPortPolling = () => {
+  if (!portPollingTimer) return
+  clearInterval(portPollingTimer)
+  portPollingTimer = null
+}
+
+const canSaveConnection = computed(() => {
+  if (tempConnectionConfig.value?.protocol !== 'rtu') return true
+  return availablePorts.value.includes(tempConnectionConfig.value?.rtuConfig?.port)
+})
 
 // System Status
 const systemStatus = ref({ text: 'System Ready.', type: 'info' as 'info' | 'success' | 'error' })
@@ -69,7 +102,6 @@ const markMasterError = async (inst: ModbusInstance) => {
 
 const openConnectionDialog = async () => {
   if (!activeInstance.value) return
-  await fetchPorts()
   // Clone current config to temp state
   tempConnectionConfig.value = JSON.parse(JSON.stringify({
     protocol: activeInstance.value.protocol,
@@ -81,6 +113,10 @@ const openConnectionDialog = async () => {
 
 const saveConnectionConfig = () => {
   if (!activeInstance.value) return
+  if (!canSaveConnection.value) {
+    setStatus('No serial ports available.', 'error')
+    return
+  }
   activeInstance.value.protocol = tempConnectionConfig.value.protocol
   activeInstance.value.tcpConfig = tempConnectionConfig.value.tcpConfig
   activeInstance.value.rtuConfig = tempConnectionConfig.value.rtuConfig
@@ -459,6 +495,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopPortPolling()
   EventsOff('slave_write')
 })
 
@@ -475,6 +512,21 @@ watch(showAddDialog, (val) => {
 
 watch(newInstanceName, () => {
   if (nameError.value) nameError.value = ''
+})
+
+watch(showConnectionDialog, (val) => {
+  if (val) {
+    startPortPolling()
+  } else {
+    stopPortPolling()
+  }
+})
+
+watch(() => tempConnectionConfig.value?.protocol, (protocol) => {
+  if (showConnectionDialog.value && protocol === 'rtu') {
+    fetchPorts()
+    syncSelectedSerialPort()
+  }
 })
 
 const addInstance = (type: 'master' | 'slave') => {
@@ -958,10 +1010,19 @@ const getMatrixRows = (instance: ModbusInstance) => {
               <div class="grid grid-cols-4 items-center gap-4">
                 <Label class="text-right">Port</Label>
                 <div class="col-span-3">
-                  <Input v-model="tempConnectionConfig.rtuConfig.port" placeholder="COM1 or /dev/ttyS0" class="font-mono" list="serial-ports" />
-                  <datalist id="serial-ports">
-                    <option v-for="port in availablePorts" :key="port" :value="port" />
-                  </datalist>
+                  <Select v-model="tempConnectionConfig.rtuConfig.port" :disabled="availablePorts.length === 0">
+                    <SelectTrigger class="font-mono">
+                      <SelectValue :placeholder="availablePorts.length === 0 ? 'No serial ports' : 'Select port'" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem v-for="port in availablePorts" :key="port" :value="port">
+                        {{ port }}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p v-if="availablePorts.length === 0" class="mt-2 text-xs text-destructive">
+                    No serial ports found. Plug in a device and wait.
+                  </p>
                 </div>
               </div>
               <div class="grid grid-cols-4 items-center gap-4">
@@ -981,7 +1042,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
 
           <DialogFooter class="mt-4">
             <Button variant="outline" @click="showConnectionDialog = false">Cancel</Button>
-            <Button @click="saveConnectionConfig">Save</Button>
+            <Button @click="saveConnectionConfig" :disabled="!canSaveConnection">Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
