@@ -979,7 +979,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
 
       <!-- Connection Setup Dialog -->
       <Dialog v-model:open="showConnectionDialog">
-        <DialogContent class="sm:max-w-[425px]">
+        <DialogContent class="sm:max-w-[480px]">
           <DialogHeader>
             <DialogTitle>Connection</DialogTitle>
             <DialogDescription>
@@ -1007,66 +1007,66 @@ const getMatrixRows = (instance: ModbusInstance) => {
             
             <!-- RTU Config -->
             <TabsContent value="rtu" class="space-y-4 pt-4">
-              <div class="grid grid-cols-4 items-center gap-4">
-                <Label class="text-right">Port</Label>
-                <div class="col-span-3">
-                  <Select v-model="tempConnectionConfig.rtuConfig.port" :disabled="availablePorts.length === 0">
-                    <SelectTrigger class="font-mono">
-                      <SelectValue :placeholder="availablePorts.length === 0 ? 'No serial ports' : 'Select port'" />
-                    </SelectTrigger>
+              <div class="space-y-2">
+                <Label>Port</Label>
+                <Select v-model="tempConnectionConfig.rtuConfig.port" :disabled="availablePorts.length === 0">
+                  <SelectTrigger class="font-mono">
+                    <SelectValue :placeholder="availablePorts.length === 0 ? 'No serial ports' : 'Select port'" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem v-for="port in availablePorts" :key="port" :value="port">
+                      {{ port }}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p v-if="availablePorts.length === 0" class="text-xs text-destructive">
+                  No serial ports found. Plug in a device and wait.
+                </p>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div class="space-y-2">
+                  <Label>Baud Rate</Label>
+                  <Select v-model="tempConnectionConfig.rtuConfig.baudRate">
+                    <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem v-for="port in availablePorts" :key="port" :value="port">
-                        {{ port }}
-                      </SelectItem>
+                      <SelectItem :value="9600">9600</SelectItem>
+                      <SelectItem :value="19200">19200</SelectItem>
+                      <SelectItem :value="38400">38400</SelectItem>
+                      <SelectItem :value="115200">115200</SelectItem>
                     </SelectContent>
                   </Select>
-                  <p v-if="availablePorts.length === 0" class="mt-2 text-xs text-destructive">
-                    No serial ports found. Plug in a device and wait.
-                  </p>
                 </div>
-              </div>
-              <div class="grid grid-cols-4 items-center gap-4">
-                <Label class="text-right">Baud Rate</Label>
-                <Select v-model="tempConnectionConfig.rtuConfig.baudRate">
-                  <SelectTrigger class="col-span-3"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem :value="9600">9600</SelectItem>
-                    <SelectItem :value="19200">19200</SelectItem>
-                    <SelectItem :value="38400">38400</SelectItem>
-                    <SelectItem :value="115200">115200</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div class="grid grid-cols-4 items-center gap-4">
-                <Label class="text-right">Data Bits</Label>
-                <Select v-model="tempConnectionConfig.rtuConfig.dataBits">
-                  <SelectTrigger class="col-span-3"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem :value="7">7</SelectItem>
-                    <SelectItem :value="8">8</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div class="grid grid-cols-4 items-center gap-4">
-                <Label class="text-right">Parity</Label>
-                <Select v-model="tempConnectionConfig.rtuConfig.parity">
-                  <SelectTrigger class="col-span-3"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="None">None</SelectItem>
-                    <SelectItem value="Even">Even</SelectItem>
-                    <SelectItem value="Odd">Odd</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div class="grid grid-cols-4 items-center gap-4">
-                <Label class="text-right">Stop Bits</Label>
-                <Select v-model="tempConnectionConfig.rtuConfig.stopBits">
-                  <SelectTrigger class="col-span-3"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem :value="1">1</SelectItem>
-                    <SelectItem :value="2">2</SelectItem>
-                  </SelectContent>
-                </Select>
+                <div class="space-y-2">
+                  <Label>Data Bits</Label>
+                  <Select v-model="tempConnectionConfig.rtuConfig.dataBits">
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem :value="7">7</SelectItem>
+                      <SelectItem :value="8">8</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div class="space-y-2">
+                  <Label>Parity</Label>
+                  <Select v-model="tempConnectionConfig.rtuConfig.parity">
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="None">None</SelectItem>
+                      <SelectItem value="Even">Even</SelectItem>
+                      <SelectItem value="Odd">Odd</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div class="space-y-2">
+                  <Label>Stop Bits</Label>
+                  <Select v-model="tempConnectionConfig.rtuConfig.stopBits">
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem :value="1">1</SelectItem>
+                      <SelectItem :value="2">2</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </TabsContent>
           </Tabs>
