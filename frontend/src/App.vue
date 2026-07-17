@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { Plus, X, Server, MonitorSmartphone, Settings2, Check } from '@lucide/vue'
+import { Plus, X, Server, MonitorSmartphone, Settings, Settings2, Check } from '@lucide/vue'
+import { useI18n } from 'vue-i18n'
 import { ConnectMaster, DisconnectMaster, ReadRegisters, WriteRegister, WriteMultipleRegisters, WriteCoil, WriteMultipleCoils, StartSlave, StopSlave, GetSlaveData, UpdateSlaveData, ClearAllConnections, GetAvailablePorts } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 import { formatRegisterValue, parseUserInput } from './lib/modbusFormatter'
@@ -16,10 +17,24 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 
 // Types
 import { useModbusStore, type ModbusInstance, createDefaultInstance } from './store/modbusStore'
+import { useSettingsStore, type AppLocale } from './store/settingsStore'
 import { storeToRefs } from 'pinia'
 
 const modbusStore = useModbusStore()
+const settingsStore = useSettingsStore()
 const { instances, activeTab } = storeToRefs(modbusStore)
+const { t, locale: i18nLocale } = useI18n()
+
+const setAppLocale = (value: unknown) => {
+  if (value === 'zh-CN' || value === 'en-US') {
+    settingsStore.setLocale(value as AppLocale)
+  }
+}
+
+watch(() => settingsStore.locale, (nextLocale) => {
+  i18nLocale.value = nextLocale
+  document.documentElement.lang = nextLocale
+}, { immediate: true })
 
 const activeInstance = computed(() => instances.value.find(i => i.id === activeTab.value))
 
@@ -33,6 +48,7 @@ const getConnectionInfoText = (inst: ModbusInstance) => {
 const showAddDialog = ref(false)
 const showConnectionDialog = ref(false)
 const showWriteDialog = ref(false)
+const showSettingsDialog = ref(false)
 
 // Connection Setup temporary state
 const tempConnectionConfig = ref<any>({})
@@ -82,10 +98,16 @@ const canSaveConnection = computed(() => {
 })
 
 // System Status
-const systemStatus = ref({ text: 'System Ready.', type: 'info' as 'info' | 'success' | 'error' })
-const setStatus = (text: string, type: 'info' | 'success' | 'error' = 'info') => {
-  systemStatus.value = { text, type }
+type StatusType = 'info' | 'success' | 'error'
+type StatusParams = Record<string, string | number>
+type StatusState = { key: string, params?: StatusParams, type: StatusType }
+
+const systemStatus = ref<StatusState>({ key: 'status.ready', type: 'info' })
+const setStatus = (key: string, type: StatusType = 'info', params?: StatusParams) => {
+  systemStatus.value = { key, params, type }
 }
+
+const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : String(error)
 
 const markMasterError = async (inst: ModbusInstance) => {
   if (inst.type !== 'master') return
@@ -114,7 +136,7 @@ const openConnectionDialog = async () => {
 const saveConnectionConfig = () => {
   if (!activeInstance.value) return
   if (!canSaveConnection.value) {
-    setStatus('No serial ports available.', 'error')
+    setStatus('messages.noSerialPorts', 'error')
     return
   }
   activeInstance.value.protocol = tempConnectionConfig.value.protocol
@@ -134,12 +156,12 @@ const startPolling = (inst: ModbusInstance) => {
         for(let i=0; i<res.length; i++) {
           inst.data[i] = res[i]
         }
-        setStatus(`[${inst.name}] Auto Read: ${inst.count} registers successfully.`, 'success')
+        setStatus('status.autoReadSuccess', 'success', { name: inst.name, count: inst.count })
         inst.status = 'connected' // Recovered!
         inst.hasError = false
       }
     } catch (e) {
-      setStatus(`[${inst.name}] Auto Read error: ${e}. Reconnecting...`, 'error')
+      setStatus('status.autoReadError', 'error', { name: inst.name, error: getErrorMessage(e) })
       inst.status = 'disconnected' // Reflect broken state in UI
       inst.hasError = true
       
@@ -170,10 +192,10 @@ const toggleAutoRead = (inst: ModbusInstance) => {
   inst.isAutoRead = !inst.isAutoRead
   if (inst.isAutoRead) {
     startPolling(inst)
-    setStatus(`[${inst.name}] Auto Read started.`, 'info')
+    setStatus('status.autoReadStarted', 'info', { name: inst.name })
   } else {
     stopPolling(inst.id)
-    setStatus(`[${inst.name}] Auto Read stopped.`, 'info')
+    setStatus('status.autoReadStopped', 'info', { name: inst.name })
   }
 }
 
@@ -185,7 +207,7 @@ const readOnce = async (inst: ModbusInstance) => {
           for(let i=0; i<res.length; i++) {
             inst.data[i] = res[i]
           }
-          setStatus(`[${inst.name}] Read ${inst.count} registers successfully.`, 'success')
+          setStatus('status.readSuccess', 'success', { name: inst.name, count: inst.count })
         }
       } else {
         const res = await GetSlaveData(inst.id, inst.startAddress, inst.count, inst.functionCode)
@@ -193,12 +215,12 @@ const readOnce = async (inst: ModbusInstance) => {
           for(let i=0; i<res.length; i++) {
             inst.data[i] = res[i]
           }
-          setStatus(`[${inst.name}] Memory refreshed.`, 'success')
+          setStatus('status.memoryRefreshed', 'success', { name: inst.name })
         }
       }
     } catch (e) {
       await markMasterError(inst)
-      setStatus(`[${inst.name}] Read error: ${e}`, 'error')
+      setStatus('status.readError', 'error', { name: inst.name, error: getErrorMessage(e) })
     }
 }
 
@@ -217,36 +239,36 @@ const toggleConnection = async () => {
       inst.isAutoRead = false
       inst.isAutoIncrement = false
       stopPolling(inst.id)
-      setStatus(`[${inst.name}] Disconnected.`, 'info')
+      setStatus('status.disconnected', 'info', { name: inst.name })
     } catch (e) {
       inst.hasError = true
-      setStatus(`[${inst.name}] Disconnect failed: ${e}`, 'error')
+      setStatus('status.disconnectFailed', 'error', { name: inst.name, error: getErrorMessage(e) })
     }
   } else {
     try {
       if (inst.type === 'master') {
         if (inst.protocol === 'tcp') {
           await ConnectMaster(inst.id, 'tcp', `${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 0, 0, "", 0)
-          setStatus(`[${inst.name}] Connected to TCP ${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 'success')
+          setStatus('status.connectedTcp', 'success', { name: inst.name, address: `${inst.tcpConfig.ip}:${inst.tcpConfig.port}` })
         } else {
           await ConnectMaster(inst.id, 'rtu', inst.rtuConfig.port, inst.rtuConfig.baudRate, inst.rtuConfig.dataBits, inst.rtuConfig.parity, inst.rtuConfig.stopBits)
-          setStatus(`[${inst.name}] Connected to RTU ${inst.rtuConfig.port}`, 'success')
+          setStatus('status.connectedRtu', 'success', { name: inst.name, address: inst.rtuConfig.port })
         }
       } else {
         // SLAVE LOGIC
         if (inst.protocol === 'tcp') {
           await StartSlave(inst.id, 'tcp', `${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 0, 0, "", 0)
-          setStatus(`[${inst.name}] Listening on TCP ${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 'success')
+          setStatus('status.listeningTcp', 'success', { name: inst.name, address: `${inst.tcpConfig.ip}:${inst.tcpConfig.port}` })
         } else {
           await StartSlave(inst.id, 'rtu', inst.rtuConfig.port, inst.rtuConfig.baudRate, inst.rtuConfig.dataBits, inst.rtuConfig.parity, inst.rtuConfig.stopBits)
-          setStatus(`[${inst.name}] Listening on RTU ${inst.rtuConfig.port}`, 'success')
+          setStatus('status.listeningRtu', 'success', { name: inst.name, address: inst.rtuConfig.port })
         }
       }
       inst.status = 'connected'
       inst.hasError = false
     } catch (e) {
       inst.hasError = true
-      setStatus(`[${inst.name}] Connection failed: ${e}`, 'error')
+      setStatus('status.connectionFailed', 'error', { name: inst.name, error: getErrorMessage(e) })
     }
   }
 }
@@ -257,11 +279,11 @@ const writeTarget = ref({ address: 0, currentValue: '' as string | number, newVa
 const openWriteDialog = (address: number, currentValue: string | number) => {
   if (!activeInstance.value) return
   if (activeInstance.value.status !== 'connected') {
-    setStatus(`[${activeInstance.value.name}] Connect before writing.`, 'error')
+    setStatus('status.connectBeforeWrite', 'error', { name: activeInstance.value.name })
     return
   }
   if (activeInstance.value.functionCode === '02' || activeInstance.value.functionCode === '04') {
-    alert("Function code 02 and 04 are Read-Only.")
+    alert(t('messages.readOnly'))
     return
   }
   writeTarget.value = { address, currentValue, newValue: currentValue }
@@ -283,7 +305,7 @@ const commitWrite = async () => {
       inst.functionCode
     )
   } catch (e) {
-    setStatus(`[${inst.name}] Invalid input: ${e}`, 'error')
+    setStatus('status.invalidInput', 'error', { name: inst.name, error: getErrorMessage(e) })
     return
   }
 
@@ -305,14 +327,14 @@ const commitWrite = async () => {
       }
     } else {
       await UpdateSlaveData(inst.id, writeTarget.value.address, parsedValues, inst.functionCode)
-      setStatus(`[${inst.name}] Updated local memory at ${writeTarget.value.address}.`, 'success')
+      setStatus('status.updatedMemory', 'success', { name: inst.name, address: writeTarget.value.address })
     }
     readOnce(inst)
   } catch (e) {
     if (inst.type === 'master') {
       await markMasterError(inst)
     }
-    setStatus(`[${inst.name}] Write failed: ${e}`, 'error')
+    setStatus('status.writeFailed', 'error', { name: inst.name, error: getErrorMessage(e) })
   }
   showWriteDialog.value = false
 }
@@ -386,9 +408,9 @@ const randomizeSlave = async (inst: ModbusInstance) => {
   try {
     await UpdateSlaveData(inst.id, inst.startAddress, randomValues, inst.functionCode)
     inst.data = randomValues
-    setStatus(`[${inst.name}] Randomized ${inst.count} values based on ${inst.dataType}.`, 'success')
+    setStatus('status.randomized', 'success', { name: inst.name, count: inst.count, dataType: inst.dataType })
   } catch (e: any) {
-    setStatus(`[${inst.name}] Randomize error: ${e}`, 'error')
+    setStatus('status.randomizeError', 'error', { name: inst.name, error: getErrorMessage(e) })
   }
 }
 
@@ -443,7 +465,7 @@ const incrementSlave = async (inst: ModbusInstance) => {
     await UpdateSlaveData(inst.id, inst.startAddress, newValues, inst.functionCode)
     inst.data = newValues
   } catch (e: any) {
-    setStatus(`[${inst.name}] Increment error: ${e}`, 'error')
+    setStatus('status.incrementError', 'error', { name: inst.name, error: getErrorMessage(e) })
   }
 }
 
@@ -459,10 +481,10 @@ const toggleAutoIncrement = (inst: ModbusInstance) => {
   inst.isAutoIncrement = !inst.isAutoIncrement
   if (inst.isAutoIncrement) {
     startAutoIncrement(inst)
-    setStatus(`[${inst.name}] Auto Increment started.`, 'info')
+    setStatus('status.incrementStarted', 'info', { name: inst.name })
   } else {
     stopPolling(inst.id)
-    setStatus(`[${inst.name}] Auto Increment stopped.`, 'info')
+    setStatus('status.incrementStopped', 'info', { name: inst.name })
   }
 }
 
@@ -488,7 +510,7 @@ onMounted(() => {
         }
       }
       if (updated) {
-        setStatus(`[${inst.name}] External Write to addr ${addr}.`, 'success')
+        setStatus('status.externalWrite', 'success', { name: inst.name, address: addr })
       }
     }
   })
@@ -535,7 +557,7 @@ const addInstance = (type: 'master' | 'slave') => {
   const name = newInstanceName.value.trim() || `${type === 'master' ? 'Master' : 'Slave'} ${newId}`
 
   if (instances.value.some(inst => inst.name.toLowerCase() === name.toLowerCase())) {
-    nameError.value = 'A connection with this name already exists.'
+    nameError.value = 'messages.duplicateName'
     return
   }
 
@@ -634,7 +656,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                     v-if="instances.length > 1"
                     @click.stop="removeInstance(instance.id, $event)"
                     class="w-4 h-4 ml-1.5 shrink-0 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-destructive/15 hover:text-destructive transition-colors duration-200"
-                    title="Close"
+                     :title="t('common.close')"
                   >
                     <X class="w-3 h-3" />
                   </div>
@@ -650,7 +672,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    <p>Add Connection</p>
+                    <p>{{ t('actions.addConnection') }}</p>
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -670,7 +692,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
             <div class="px-6 py-3 border-b border-border flex items-center justify-between gap-4 shrink-0 bg-card">
             <div class="flex items-center gap-3 shrink-0">
               <h2 class="text-sm font-semibold flex items-center gap-2">
-                <span class="opacity-80">{{ instance.type === 'master' ? 'Master' : 'Slave' }}</span>
+                <span class="opacity-80">{{ instance.type === 'master' ? t('connection.master') : t('connection.slave') }}</span>
                 <span class="text-muted-foreground font-normal">•</span> 
                 <span class="font-mono text-[13px] text-foreground">{{ getConnectionInfoText(instance) }}</span>
               </h2>
@@ -681,11 +703,11 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 class="min-w-[110px] transition-colors ml-2"
                 @click="toggleConnection"
               >
-                {{ instance.status === 'connected' ? 'Disconnect' : 'Connect' }}
+                {{ instance.status === 'connected' ? t('connection.disconnect') : t('connection.connect') }}
               </Button>
 
               <Button variant="outline" size="sm" class="min-w-[90px]" @click="openConnectionDialog" :disabled="instance.status === 'connected'">
-                <Settings2 class="w-4 h-4 mr-2 text-muted-foreground" /> Settings
+                <Settings2 class="w-4 h-4 mr-2 text-muted-foreground" /> {{ t('connection.settings') }}
               </Button>
             </div>
 
@@ -698,7 +720,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 :disabled="instance.status !== 'connected'"
                 @click="randomizeSlave(instance)"
               >
-                Random
+                {{ t('actions.random') }}
               </Button>
 
               <Button 
@@ -709,7 +731,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 @click="toggleAutoIncrement(instance)"
                 :disabled="instance.status !== 'connected'"
               >
-                {{ instance.isAutoIncrement ? 'Stop Increment' : 'Increment' }}
+                {{ instance.isAutoIncrement ? t('actions.stopIncrement') : t('actions.increment') }}
               </Button>
 
 
@@ -721,7 +743,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 @click="toggleAutoRead(instance)"
                 :disabled="instance.status !== 'connected'"
               >
-                {{ instance.isAutoRead ? 'Stop Poll' : 'Start Poll' }}
+                {{ instance.isAutoRead ? t('actions.stopPoll') : t('actions.startPoll') }}
               </Button>
               
               <Button 
@@ -732,7 +754,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 :disabled="instance.status !== 'connected' || instance.isAutoRead"
                 @click="readOnce(instance)"
               >
-                Read
+                {{ t('actions.read') }}
               </Button>
             </div>
             </div>
@@ -746,27 +768,27 @@ const getMatrixRows = (instance: ModbusInstance) => {
               <!-- Group 1: Addressing -->
               <div class="flex items-center gap-3 shrink-0">
                 <div class="space-y-1.5 w-[70px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground">Unit ID</Label>
+                  <Label class="text-[11px] font-semibold text-muted-foreground">{{ t('fields.unitId') }}</Label>
                   <Input v-model="instance.slaveId" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" />
                 </div>
                 <div class="space-y-1.5 w-[140px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground">Function</Label>
-                  <Select v-model="instance.functionCode" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" @update:modelValue="onAddressingChange(instance)">
+                  <Label class="text-[11px] font-semibold text-muted-foreground">{{ t('fields.function') }}</Label>
+                  <Select :key="settingsStore.locale" v-model="instance.functionCode" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" @update:modelValue="onAddressingChange(instance)">
                     <SelectTrigger class="h-8 text-xs bg-background shadow-sm"><SelectValue /></SelectTrigger>
                     <SelectContent class="text-xs">
-                      <SelectItem value="01">Coils (0x01)</SelectItem>
-                      <SelectItem value="02">Discrete (0x02)</SelectItem>
-                      <SelectItem value="03">Holding (0x03)</SelectItem>
-                      <SelectItem value="04">Input (0x04)</SelectItem>
+                      <SelectItem value="01">{{ t('functionCodes.01') }}</SelectItem>
+                      <SelectItem value="02">{{ t('functionCodes.02') }}</SelectItem>
+                      <SelectItem value="03">{{ t('functionCodes.03') }}</SelectItem>
+                      <SelectItem value="04">{{ t('functionCodes.04') }}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div class="space-y-1.5 w-[80px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground">Start</Label>
+                  <Label class="text-[11px] font-semibold text-muted-foreground">{{ t('fields.start') }}</Label>
                   <Input v-model="instance.startAddress" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" @change="onAddressingChange(instance)" />
                 </div>
                 <div class="space-y-1.5 w-[70px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground">Count</Label>
+                  <Label class="text-[11px] font-semibold text-muted-foreground">{{ t('fields.count') }}</Label>
                   <Input v-model="instance.count" type="number" max="100" class="h-8 text-xs font-mono bg-background shadow-sm" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" @change="onAddressingChange(instance)" />
                 </div>
               </div>
@@ -776,7 +798,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
               <!-- Group 2: Parsing -->
               <div class="flex items-center gap-3 shrink-0">
                 <div class="space-y-1.5 w-[100px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground" :class="{ 'opacity-50': instance.functionCode === '01' || instance.functionCode === '02' }">Data Type</Label>
+                  <Label class="text-[11px] font-semibold text-muted-foreground" :class="{ 'opacity-50': instance.functionCode === '01' || instance.functionCode === '02' }">{{ t('fields.dataType') }}</Label>
                   <Select v-model="instance.dataType" :disabled="instance.functionCode === '01' || instance.functionCode === '02'">
                     <SelectTrigger class="h-8 text-xs bg-background shadow-sm"><SelectValue /></SelectTrigger>
                     <SelectContent class="text-xs">
@@ -789,7 +811,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                   </Select>
                 </div>
                 <div class="space-y-1.5 w-[80px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground" :class="{ 'opacity-50': instance.functionCode === '01' || instance.functionCode === '02' }">Format</Label>
+                  <Label class="text-[11px] font-semibold text-muted-foreground" :class="{ 'opacity-50': instance.functionCode === '01' || instance.functionCode === '02' }">{{ t('fields.format') }}</Label>
                   <Select v-model="instance.format" :disabled="instance.functionCode === '01' || instance.functionCode === '02'">
                     <SelectTrigger class="h-8 text-xs bg-background shadow-sm"><SelectValue /></SelectTrigger>
                     <SelectContent class="text-xs">
@@ -800,7 +822,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                   </Select>
                 </div>
                 <div class="space-y-1.5 w-[90px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground" :class="{ 'opacity-50': instance.functionCode === '01' || instance.functionCode === '02' }">Byte Order</Label>
+                  <Label class="text-[11px] font-semibold text-muted-foreground" :class="{ 'opacity-50': instance.functionCode === '01' || instance.functionCode === '02' }">{{ t('fields.byteOrder') }}</Label>
                   <Select v-model="instance.byteOrder" :disabled="instance.functionCode === '01' || instance.functionCode === '02'">
                     <SelectTrigger class="h-8 text-xs bg-background font-mono shadow-sm"><SelectValue /></SelectTrigger>
                     <SelectContent class="text-xs font-mono">
@@ -818,7 +840,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
               <!-- Group 3: Polling Settings -->
               <div class="flex items-center gap-3 shrink-0">
                 <div class="space-y-1.5 w-[90px]">
-                  <Label class="text-[11px] font-semibold text-muted-foreground">Interval</Label>
+                  <Label class="text-[11px] font-semibold text-muted-foreground">{{ t('fields.interval') }}</Label>
                   <Input v-model="instance.intervalMs" type="number" class="h-8 text-xs font-mono bg-background shadow-sm" :disabled="instance.type === 'master' ? instance.isAutoRead : instance.isAutoIncrement" />
                 </div>
               </div>
@@ -828,7 +850,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
               <!-- Group 4: Display Options -->
               <div class="flex items-center gap-3 shrink-0">
                 <div class="space-y-1.5 flex flex-col items-center justify-center">
-                  <Label class="text-[11px] font-semibold text-muted-foreground cursor-pointer" @click="modbusStore.toggleRawData()">Raw</Label>
+                   <Label class="text-[11px] font-semibold text-muted-foreground cursor-pointer" @click="modbusStore.toggleRawData()">{{ t('fields.raw') }}</Label>
                   <div class="h-8 flex items-center">
                     <button 
                       @click="modbusStore.toggleRawData()" 
@@ -836,7 +858,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                       class="relative inline-flex h-4 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 border-transparent focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background transition-colors"
                       :class="modbusStore.showRawData ? 'bg-primary' : 'bg-input'"
                     >
-                      <span class="sr-only">Toggle Raw Data</span>
+                       <span class="sr-only">{{ t('fields.raw') }}</span>
                       <span 
                         class="pointer-events-none inline-block h-3 w-3 transform rounded-full bg-background shadow-lg ring-0 transition duration-200 ease-in-out"
                         :class="modbusStore.showRawData ? 'translate-x-[0.35rem]' : '-translate-x-[0.35rem]'"
@@ -856,7 +878,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                   <Table class="w-full text-sm">
                     <TableHeader class="bg-muted/30 sticky top-0 z-10">
                       <TableRow class="hover:bg-transparent border-none">
-                        <TableHead class="w-24 text-center border-b border-r border-border font-bold text-foreground">Address</TableHead>
+                        <TableHead class="w-24 text-center border-b border-r border-border font-bold text-foreground">{{ t('common.address') }}</TableHead>
                         <TableHead v-for="i in 10" :key="i" class="text-center font-bold text-foreground w-[9%] border-b border-r border-border">
                           {{ i - 1 }}
                         </TableHead>
@@ -887,7 +909,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                               </button>
                             </TooltipTrigger>
                             <TooltipContent>
-                              <p>Write address <span class="font-mono text-primary">{{ instance.startAddress + rIdx * 10 + cIdx }}</span></p>
+                              <p>{{ t('data.writeAddress') }} <span class="font-mono text-primary">{{ instance.startAddress + rIdx * 10 + cIdx }}</span></p>
                             </TooltipContent>
                           </Tooltip>
                           <div v-else-if="cell.value !== null" class="w-full min-h-[36px] py-1 font-mono text-center text-muted-foreground flex flex-col items-center justify-center gap-0.5">
@@ -926,35 +948,64 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 'bg-destructive': systemStatus.type === 'error'
               }"
             ></div>
-            {{ systemStatus.text }}
+            {{ t(systemStatus.key, systemStatus.params || {}) }}
           </span>
         </div>
-        <span class="text-muted-foreground whitespace-nowrap">© Modlab · dote27@163.com</span>
+        <div class="flex items-center gap-3">
+          <Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground hover:text-foreground" @click="showSettingsDialog = true">
+            <Settings class="w-3.5 h-3.5 mr-1.5" />
+            {{ t('common.settings') }}
+          </Button>
+          <span class="text-muted-foreground whitespace-nowrap">{{ t('app.copyright') }}</span>
+        </div>
       </footer>
+
+      <!-- Application Settings Dialog -->
+      <Dialog v-model:open="showSettingsDialog">
+        <DialogContent class="sm:max-w-[360px]">
+          <DialogHeader>
+            <DialogTitle>{{ t('dialogs.settings') }}</DialogTitle>
+            <DialogDescription>{{ t('dialogs.settingsDescription') }}</DialogDescription>
+          </DialogHeader>
+          <div class="grid gap-2 py-4">
+            <Label>{{ t('dialogs.language') }}</Label>
+            <Select :model-value="settingsStore.locale" @update:modelValue="setAppLocale">
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="zh-CN">{{ t('dialogs.chinese') }}</SelectItem>
+                <SelectItem value="en-US">{{ t('dialogs.english') }}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" @click="showSettingsDialog = false">{{ t('common.close') }}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <!-- Add Instance Dialog -->
       <Dialog v-model:open="showAddDialog">
         <DialogContent class="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Add Connection</DialogTitle>
-            <DialogDescription>
-              Choose a role.
-            </DialogDescription>
+            <DialogTitle>{{ t('dialogs.addConnection') }}</DialogTitle>
+            <DialogDescription>{{ t('dialogs.chooseRole') }}</DialogDescription>
           </DialogHeader>
           <div class="grid gap-4 py-4">
             <div class="space-y-2 mb-2">
-              <Label :class="{ 'text-destructive': nameError }">Name</Label>
+              <Label :class="{ 'text-destructive': nameError }">{{ t('dialogs.name') }}</Label>
               <Input 
                 v-model="newInstanceName" 
-                placeholder="Pump Station 1 (optional)"
+                :placeholder="t('placeholders.optionalName')"
                 autofocus 
                 @keyup.enter="addInstance('master')" 
                 :class="{ 'border-destructive focus-visible:ring-destructive': nameError }"
               />
-              <p v-if="nameError" class="text-[11px] font-medium text-destructive mt-1">{{ nameError }}</p>
+              <p v-if="nameError" class="text-[11px] font-medium text-destructive mt-1">{{ t(nameError) }}</p>
             </div>
             
-            <Label class="text-muted-foreground">Role</Label>
+            <Label class="text-muted-foreground">{{ t('dialogs.role') }}</Label>
             <div class="grid grid-cols-2 gap-4">
               <Button 
                 variant="outline" 
@@ -962,7 +1013,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 @click="addInstance('master')"
               >
                 <MonitorSmartphone class="w-8 h-8" />
-                <span class="font-semibold">Master</span>
+                <span class="font-semibold">{{ t('connection.master') }}</span>
               </Button>
               <Button 
                 variant="outline" 
@@ -970,7 +1021,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                 @click="addInstance('slave')"
               >
                 <Server class="w-8 h-8" />
-                <span class="font-semibold">Slave</span>
+                <span class="font-semibold">{{ t('connection.slave') }}</span>
               </Button>
             </div>
           </div>
@@ -981,10 +1032,8 @@ const getMatrixRows = (instance: ModbusInstance) => {
       <Dialog v-model:open="showConnectionDialog">
         <DialogContent class="sm:w-[480px] sm:max-w-[480px] sm:h-[440px] grid-rows-[auto_1fr_auto]">
           <DialogHeader>
-            <DialogTitle>Connection</DialogTitle>
-            <DialogDescription>
-              Set TCP or serial parameters.
-            </DialogDescription>
+            <DialogTitle>{{ t('dialogs.connection') }}</DialogTitle>
+            <DialogDescription>{{ t('dialogs.connectionDescription') }}</DialogDescription>
           </DialogHeader>
           
           <Tabs v-model="tempConnectionConfig.protocol" class="mt-2 min-h-0">
@@ -996,11 +1045,11 @@ const getMatrixRows = (instance: ModbusInstance) => {
             <!-- TCP Config -->
             <TabsContent value="tcp" class="space-y-4 pt-4">
               <div class="grid grid-cols-4 items-center gap-4">
-                <Label class="text-right">IP</Label>
+                <Label class="text-right">{{ t('connection.ip') }}</Label>
                 <Input v-model="tempConnectionConfig.tcpConfig.ip" class="col-span-3 font-mono" />
               </div>
               <div class="grid grid-cols-4 items-center gap-4">
-                <Label class="text-right">Port</Label>
+                <Label class="text-right">{{ t('common.port') }}</Label>
                 <Input v-model="tempConnectionConfig.tcpConfig.port" type="number" class="col-span-3 font-mono" />
               </div>
             </TabsContent>
@@ -1008,10 +1057,10 @@ const getMatrixRows = (instance: ModbusInstance) => {
             <!-- RTU Config -->
             <TabsContent value="rtu" class="space-y-4 pt-4">
               <div class="space-y-2">
-                <Label>Port</Label>
+                <Label>{{ t('common.port') }}</Label>
                 <Select v-model="tempConnectionConfig.rtuConfig.port" :disabled="availablePorts.length === 0">
                   <SelectTrigger class="font-mono">
-                    <SelectValue :placeholder="availablePorts.length === 0 ? 'No serial ports' : 'Select port'" />
+                    <SelectValue :placeholder="availablePorts.length === 0 ? t('placeholders.noSerialPorts') : t('placeholders.selectPort')" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem v-for="port in availablePorts" :key="port" :value="port">
@@ -1020,12 +1069,12 @@ const getMatrixRows = (instance: ModbusInstance) => {
                   </SelectContent>
                 </Select>
                 <p v-if="availablePorts.length === 0" class="text-xs text-destructive">
-                  No serial ports found. Plug in a device and wait.
+                  {{ t('messages.noSerialPortsHint') }}
                 </p>
               </div>
               <div class="grid grid-cols-2 gap-3">
                 <div class="space-y-2">
-                  <Label>Baud Rate</Label>
+                  <Label>{{ t('connection.baudRate') }}</Label>
                   <Select v-model="tempConnectionConfig.rtuConfig.baudRate">
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -1037,7 +1086,7 @@ const getMatrixRows = (instance: ModbusInstance) => {
                   </Select>
                 </div>
                 <div class="space-y-2">
-                  <Label>Data Bits</Label>
+                  <Label>{{ t('connection.dataBits') }}</Label>
                   <Select v-model="tempConnectionConfig.rtuConfig.dataBits">
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -1047,18 +1096,18 @@ const getMatrixRows = (instance: ModbusInstance) => {
                   </Select>
                 </div>
                 <div class="space-y-2">
-                  <Label>Parity</Label>
-                  <Select v-model="tempConnectionConfig.rtuConfig.parity">
+                  <Label>{{ t('connection.parity') }}</Label>
+                  <Select :key="settingsStore.locale" v-model="tempConnectionConfig.rtuConfig.parity">
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="None">None</SelectItem>
-                      <SelectItem value="Even">Even</SelectItem>
-                      <SelectItem value="Odd">Odd</SelectItem>
+                      <SelectItem value="None">{{ t('connection.none') }}</SelectItem>
+                      <SelectItem value="Even">{{ t('connection.even') }}</SelectItem>
+                      <SelectItem value="Odd">{{ t('connection.odd') }}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div class="space-y-2">
-                  <Label>Stop Bits</Label>
+                  <Label>{{ t('connection.stopBits') }}</Label>
                   <Select v-model="tempConnectionConfig.rtuConfig.stopBits">
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -1072,8 +1121,8 @@ const getMatrixRows = (instance: ModbusInstance) => {
           </Tabs>
 
           <DialogFooter>
-            <Button variant="outline" @click="showConnectionDialog = false">Cancel</Button>
-            <Button @click="saveConnectionConfig" :disabled="!canSaveConnection">Save</Button>
+            <Button variant="outline" @click="showConnectionDialog = false">{{ t('common.cancel') }}</Button>
+            <Button @click="saveConnectionConfig" :disabled="!canSaveConnection">{{ t('common.save') }}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1082,20 +1131,20 @@ const getMatrixRows = (instance: ModbusInstance) => {
       <Dialog v-model:open="showWriteDialog">
         <DialogContent class="sm:max-w-[320px]">
           <DialogHeader>
-            <DialogTitle>Write</DialogTitle>
+            <DialogTitle>{{ t('dialogs.write') }}</DialogTitle>
             <DialogDescription>
-              Address: <span class="font-mono font-bold text-primary">{{ writeTarget.address }}</span>
+              {{ t('dialogs.writeAddress', { address: writeTarget.address }) }}
             </DialogDescription>
           </DialogHeader>
           <div class="grid gap-4 py-4">
             <div class="space-y-2">
-              <Label>Current: <span class="font-mono text-muted-foreground">{{ writeTarget.currentValue }}</span></Label>
+              <Label>{{ t('data.current') }}: <span class="font-mono text-muted-foreground">{{ writeTarget.currentValue }}</span></Label>
               <Input v-model="writeTarget.newValue" type="text" class="font-mono text-lg" autofocus @keyup.enter="commitWrite" />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" @click="showWriteDialog = false">Cancel</Button>
-            <Button @click="commitWrite">Write <Check class="w-4 h-4 ml-2"/></Button>
+            <Button variant="outline" @click="showWriteDialog = false">{{ t('common.cancel') }}</Button>
+            <Button @click="commitWrite">{{ t('actions.write') }} <Check class="w-4 h-4 ml-2"/></Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
