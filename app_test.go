@@ -1,10 +1,62 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/dduutt/modbus"
+	gserial "go.bug.st/serial"
 )
+
+type countingSerial struct {
+	mu             sync.Mutex
+	closeCalls     int
+	closeErr       error
+	closeStarted   chan struct{}
+	releaseClose   chan struct{}
+	closeStartOnce sync.Once
+}
+
+func (s *countingSerial) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (s *countingSerial) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (s *countingSerial) Close() error {
+	s.mu.Lock()
+	s.closeCalls++
+	callNumber := s.closeCalls
+	s.mu.Unlock()
+
+	if callNumber == 1 && s.closeStarted != nil {
+		s.closeStartOnce.Do(func() { close(s.closeStarted) })
+	}
+	if callNumber == 1 && s.releaseClose != nil {
+		<-s.releaseClose
+	}
+	return s.closeErr
+}
+
+func (s *countingSerial) closeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closeCalls
+}
+
+func newTestClient(serial io.ReadWriteCloser) *ClientInstance {
+	transport := modbus.NewRTUTransport(serial)
+	return &ClientInstance{
+		transport: transport,
+		client:    modbus.NewClient(transport),
+	}
+}
 
 func TestMasterSlaveCommunication(t *testing.T) {
 	app := NewApp()
@@ -166,5 +218,146 @@ func TestSlaveDataRejectsUnsupportedFunctionCode(t *testing.T) {
 
 	if _, err := app.GetSlaveData(slaveID, 0, 1, "99"); err == nil {
 		t.Fatalf("Expected GetSlaveData to reject unsupported function code")
+	}
+}
+
+func TestDisconnectMasterClosesRTUConnectionOnce(t *testing.T) {
+	app := NewApp()
+	serial := &countingSerial{}
+	app.clients.Store("rtu", newTestClient(serial))
+
+	if err := app.DisconnectMaster("rtu"); err != nil {
+		t.Fatalf("DisconnectMaster failed: %v", err)
+	}
+	if got := serial.closeCount(); got != 1 {
+		t.Fatalf("expected one serial close, got %d", got)
+	}
+	if _, ok := app.clients.Load("rtu"); ok {
+		t.Fatal("expected client to be removed after disconnect")
+	}
+
+	if err := app.DisconnectMaster("rtu"); err != nil {
+		t.Fatalf("repeated DisconnectMaster failed: %v", err)
+	}
+	if got := serial.closeCount(); got != 1 {
+		t.Fatalf("expected repeated disconnect to keep one serial close, got %d", got)
+	}
+}
+
+func TestDisconnectMasterReturnsSerialCloseError(t *testing.T) {
+	closeErr := errors.New("serial close failed")
+	app := NewApp()
+	serial := &countingSerial{closeErr: closeErr}
+	app.clients.Store("rtu", newTestClient(serial))
+
+	err := app.DisconnectMaster("rtu")
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected serial close error, got %v", err)
+	}
+	if _, ok := app.clients.Load("rtu"); ok {
+		t.Fatal("expected client to be removed after close failure")
+	}
+}
+
+func TestClearAllConnectionsClosesRTUConnectionOnce(t *testing.T) {
+	app := NewApp()
+	serial := &countingSerial{}
+	app.clients.Store("rtu", newTestClient(serial))
+
+	if err := app.ClearAllConnections(); err != nil {
+		t.Fatalf("ClearAllConnections failed: %v", err)
+	}
+	if got := serial.closeCount(); got != 1 {
+		t.Fatalf("expected cleanup to close serial once, got %d", got)
+	}
+	if _, ok := app.clients.Load("rtu"); ok {
+		t.Fatal("expected client to be removed after cleanup")
+	}
+}
+
+func TestConnectMasterClosesPreviousRTUConnectionOnce(t *testing.T) {
+	app := NewApp()
+	serials := []*countingSerial{{}, {}}
+	openCalls := 0
+	app.openSerialPort = func(_ string, _ *gserial.Mode) (io.ReadWriteCloser, error) {
+		serial := serials[openCalls]
+		openCalls++
+		return serial, nil
+	}
+
+	if err := app.ConnectMaster("rtu", "rtu", "COM1", 9600, 8, "N", 1); err != nil {
+		t.Fatalf("initial ConnectMaster failed: %v", err)
+	}
+	if err := app.ConnectMaster("rtu", "rtu", "COM1", 9600, 8, "N", 1); err != nil {
+		t.Fatalf("replacement ConnectMaster failed: %v", err)
+	}
+	if got := serials[0].closeCount(); got != 1 {
+		t.Fatalf("expected replaced serial to close once, got %d", got)
+	}
+	if got := serials[1].closeCount(); got != 0 {
+		t.Fatalf("expected replacement serial to remain open, got %d closes", got)
+	}
+
+	if err := app.DisconnectMaster("rtu"); err != nil {
+		t.Fatalf("final DisconnectMaster failed: %v", err)
+	}
+	if got := serials[1].closeCount(); got != 1 {
+		t.Fatalf("expected active serial to close once, got %d", got)
+	}
+}
+
+func TestConnectAndDisconnectMasterAreSerialized(t *testing.T) {
+	app := NewApp()
+	first := &countingSerial{}
+	second := &countingSerial{}
+	openStarted := make(chan struct{})
+	releaseOpen := make(chan struct{})
+	openCalls := 0
+	app.openSerialPort = func(_ string, _ *gserial.Mode) (io.ReadWriteCloser, error) {
+		openCalls++
+		if openCalls == 2 {
+			close(openStarted)
+			<-releaseOpen
+			return second, nil
+		}
+		return first, nil
+	}
+
+	if err := app.ConnectMaster("rtu", "rtu", "COM1", 9600, 8, "N", 1); err != nil {
+		t.Fatalf("initial ConnectMaster failed: %v", err)
+	}
+
+	connectDone := make(chan error, 1)
+	go func() {
+		connectDone <- app.ConnectMaster("rtu", "rtu", "COM1", 9600, 8, "N", 1)
+	}()
+	<-openStarted
+
+	disconnectDone := make(chan error, 1)
+	go func() {
+		disconnectDone <- app.DisconnectMaster("rtu")
+	}()
+
+	select {
+	case err := <-disconnectDone:
+		t.Fatalf("DisconnectMaster completed before replacement finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseOpen)
+	if err := <-connectDone; err != nil {
+		t.Fatalf("replacement ConnectMaster failed: %v", err)
+	}
+	if err := <-disconnectDone; err != nil {
+		t.Fatalf("DisconnectMaster failed: %v", err)
+	}
+	if _, ok := app.clients.Load("rtu"); ok {
+		t.Fatal("expected serialized disconnect to remove replacement client")
+	}
+	if got := first.closeCount(); got != 1 {
+		t.Fatalf("expected first serial to close once, got %d", got)
+	}
+	if got := second.closeCount(); got != 1 {
+		t.Fatalf("expected replacement serial to close once, got %d", got)
 	}
 }

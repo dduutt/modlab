@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { ConnectMaster, DisconnectMaster, ReadRegisters, WriteRegister, WriteMultipleRegisters, WriteCoil, WriteMultipleCoils, StartSlave, StopSlave, GetSlaveData, UpdateSlaveData, ClearAllConnections, GetAvailablePorts } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 import { formatRegisterValue, parseUserInput } from './lib/modbusFormatter'
+import { reconnectAfterPollingFailure } from './lib/pollingReconnect'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -165,16 +166,22 @@ const startPolling = (inst: ModbusInstance) => {
       inst.status = 'disconnected' // Reflect broken state in UI
       inst.hasError = true
       
-      // Attempt to re-establish the socket for the next polling cycle
+      // Reconnect only while this exact polling session is still active.
       try {
-        await DisconnectMaster(inst.id)
-        if (inst.protocol === 'tcp') {
-          await ConnectMaster(inst.id, 'tcp', `${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 0, 0, "", 0)
-        } else {
-          await ConnectMaster(inst.id, 'rtu', inst.rtuConfig.port, inst.rtuConfig.baudRate, inst.rtuConfig.dataBits, inst.rtuConfig.parity, inst.rtuConfig.stopBits)
-        }
+        await reconnectAfterPollingFailure({
+          isActive: () => inst.isAutoRead && activeTimers.get(inst.id) === timer,
+          disconnect: () => DisconnectMaster(inst.id),
+          reconnect: () => {
+            if (inst.protocol === 'tcp') {
+              return ConnectMaster(inst.id, 'tcp', `${inst.tcpConfig.ip}:${inst.tcpConfig.port}`, 0, 0, "", 0)
+            }
+            return ConnectMaster(inst.id, 'rtu', inst.rtuConfig.port, inst.rtuConfig.baudRate, inst.rtuConfig.dataBits, inst.rtuConfig.parity, inst.rtuConfig.stopBits)
+          },
+        })
       } catch (reconnectErr) {
-        // Silent fail; next tick will just try again
+        if (inst.isAutoRead) {
+          setStatus('status.disconnectFailed', 'error', { name: inst.name, error: getErrorMessage(reconnectErr) })
+        }
       }
     }
   }, inst.intervalMs || 1000)
@@ -186,6 +193,11 @@ const stopPolling = (id: string) => {
     clearInterval(activeTimers.get(id))
     activeTimers.delete(id)
   }
+}
+
+const stopAutoRead = (inst: ModbusInstance) => {
+  inst.isAutoRead = false
+  stopPolling(inst.id)
 }
 
 const toggleAutoRead = (inst: ModbusInstance) => {
@@ -228,6 +240,8 @@ const toggleConnection = async () => {
   if (!activeInstance.value) return
   const inst = activeInstance.value
   if (inst.status === 'connected') {
+    stopAutoRead(inst)
+    inst.isAutoIncrement = false
     try {
       if (inst.type === 'master') {
         await DisconnectMaster(inst.id)
@@ -236,11 +250,9 @@ const toggleConnection = async () => {
       }
       inst.status = 'disconnected'
       inst.hasError = false
-      inst.isAutoRead = false
-      inst.isAutoIncrement = false
-      stopPolling(inst.id)
       setStatus('status.disconnected', 'info', { name: inst.name })
     } catch (e) {
+      inst.status = 'disconnected'
       inst.hasError = true
       setStatus('status.disconnectFailed', 'error', { name: inst.name, error: getErrorMessage(e) })
     }
@@ -576,6 +588,7 @@ const removeInstance = (id: string, event: Event) => {
   stopPolling(id)
   const instToClose = instances.value.find(i => i.id === id)
   if (instToClose) {
+    instToClose.isAutoRead = false
     if (instToClose.type === 'master') {
       DisconnectMaster(id).catch((e: any) => console.error(e))
     } else {
