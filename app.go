@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -23,13 +24,14 @@ type ServerInstance struct {
 type ClientInstance struct {
 	transport modbus.Transport
 	client    *modbus.Client
-	conn      io.Closer
 }
 
 type App struct {
-	ctx     context.Context
-	clients sync.Map
-	servers sync.Map
+	ctx            context.Context
+	clients        sync.Map
+	servers        sync.Map
+	clientsMu      sync.Mutex
+	openSerialPort func(address string, mode *gserial.Mode) (io.ReadWriteCloser, error)
 }
 
 func NewApp() *App {
@@ -59,15 +61,17 @@ func (a *App) shutdown(ctx context.Context) {
 
 // ClearAllConnections forcefully stops all clients and servers. Useful for frontend hot-reloads.
 func (a *App) ClearAllConnections() error {
+	a.clientsMu.Lock()
+	var closeErr error
 	a.clients.Range(func(key, value interface{}) bool {
 		ci := value.(*ClientInstance)
-		ci.transport.Close()
-		if ci.conn != nil {
-			ci.conn.Close()
+		if ci.transport != nil {
+			closeErr = errors.Join(closeErr, ci.transport.Close())
 		}
 		a.clients.Delete(key)
 		return true
 	})
+	a.clientsMu.Unlock()
 	a.servers.Range(func(key, value interface{}) bool {
 		si := value.(*ServerInstance)
 		si.cancel()
@@ -80,7 +84,7 @@ func (a *App) ClearAllConnections() error {
 		a.servers.Delete(key)
 		return true
 	})
-	return nil
+	return closeErr
 }
 
 // ---------------------------------------------------------
@@ -109,13 +113,41 @@ func getStopBits(s uint) gserial.StopBits {
 	return gserial.OneStopBit
 }
 
+func (a *App) openSerial(address string, mode *gserial.Mode) (io.ReadWriteCloser, error) {
+	if a.openSerialPort != nil {
+		return a.openSerialPort(address, mode)
+	}
+	return gserial.Open(address, mode)
+}
+
+func (a *App) disconnectMasterLocked(id string) error {
+	val, ok := a.clients.Load(id)
+	if !ok {
+		return nil
+	}
+
+	ci := val.(*ClientInstance)
+	var closeErr error
+	if ci.transport != nil {
+		closeErr = ci.transport.Close()
+	}
+	a.clients.Delete(id)
+	if closeErr != nil {
+		return fmt.Errorf("close client %s: %w", id, closeErr)
+	}
+	return nil
+}
+
 // ConnectMaster creates and connects a Modbus Client
 func (a *App) ConnectMaster(id string, protocol string, address string, rtuBaudRate uint, rtuDataBits uint, rtuParity string, rtuStopBits uint) error {
-	a.DisconnectMaster(id)
+	a.clientsMu.Lock()
+	defer a.clientsMu.Unlock()
+	if err := a.disconnectMasterLocked(id); err != nil {
+		return err
+	}
 
 	var transport modbus.Transport
 	var client *modbus.Client
-	var conn io.Closer
 
 	if protocol == "tcp" {
 		transport = modbus.NewTCPTransport(address, modbus.WithTCPTimeout(2*time.Second))
@@ -131,11 +163,10 @@ func (a *App) ConnectMaster(id string, protocol string, address string, rtuBaudR
 			Parity:   getParity(rtuParity),
 			StopBits: getStopBits(rtuStopBits),
 		}
-		port, err := gserial.Open(address, mode)
+		port, err := a.openSerial(address, mode)
 		if err != nil {
 			return err
 		}
-		conn = port
 		transport = modbus.NewRTUTransport(port, modbus.WithRTUTimeout(2*time.Second))
 		client = modbus.NewClient(transport, modbus.WithTimeout(2*time.Second))
 	}
@@ -143,22 +174,15 @@ func (a *App) ConnectMaster(id string, protocol string, address string, rtuBaudR
 	a.clients.Store(id, &ClientInstance{
 		transport: transport,
 		client:    client,
-		conn:      conn,
 	})
 	return nil
 }
 
 // DisconnectMaster stops a Modbus Client
 func (a *App) DisconnectMaster(id string) error {
-	if val, ok := a.clients.Load(id); ok {
-		ci := val.(*ClientInstance)
-		ci.transport.Close()
-		if ci.conn != nil {
-			ci.conn.Close()
-		}
-		a.clients.Delete(id)
-	}
-	return nil
+	a.clientsMu.Lock()
+	defer a.clientsMu.Unlock()
+	return a.disconnectMasterLocked(id)
 }
 
 // ReadRegisters reads from the client
