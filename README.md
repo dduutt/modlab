@@ -1,7 +1,34 @@
-# Tauri + Vue + TypeScript
+# Modlab
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+Modbus 桌面调试工具，支持 **TCP / RTU 主站通信与从站模拟**，可通过多个标签页同时管理设备。
 
-## Recommended IDE Setup
+## 主要功能
 
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- **主站**：单次读取、定时轮询、线圈与保持寄存器写入。
+- **从站**：四个数据区模拟，支持手动修改、随机填充和递增。
+- **数据显示**：支持 `Int16`、`UInt16`、`Int32`、`UInt32`、`Float32`，十进制 / 十六进制、四种字节序及原始寄存器值显示。
+- **多设备**：标签页独立连接、重命名；多个从站可通过不同 Unit ID 共享 TCP 监听地址或 RTU 串口。
+- **通信日志**：直接显示 TCP / RTU 主站与从站的原始 TX / RX 报文，重复收发和重试逐条保留。支持按设备、方向或错误筛选，展开协议解析及复制；每个设备保留最近 2000 条。
+- **配置保存**：重启恢复设备配置，支持中英文切换。
+
+## 基本操作
+
+1. 点击顶部 **`+`**，添加 Master 或 Slave。
+2. 打开 **设置（Settings）**，选择 TCP / RTU 并保存连接参数。
+3. 设置 Unit ID、功能码、地址范围及显示类型。
+4. 主站点击 **连接（Connect）**，使用 **读取（Read）** 或 **轮询（Poll）**；从站点击 **监听（Listen）**。
+5. 双击数值编辑，双击线圈切换 `0 / 1`；右键可复制、编辑或归零。再次点击连接或监听按钮可停止。
+
+从站可使用 **随机（Random）** 填充数据，或开启 **递增（Increment）** 按指定间隔更新。关闭递增时，表格每秒同步一次数据，显示外部主站的写入结果。
+
+## 使用说明
+
+- RTU 设置窗口内，串口列表自动刷新，扫描完成后间隔 **1 秒**再次扫描。拔出选中串口后需重新选择，通信连接不会因此自动恢复。
+- 修改连接参数、功能码或地址范围前需断开连接。主站可在连接期间切换 Unit ID；从站需先停止监听。
+- 32 位类型占用两个寄存器，读取数量仍按 16 位寄存器计数。
+- TCP 从站监听时，设置右侧显示客户端数量；点击可查看远端地址、连接时间和最近请求，每秒自动更新。
+- 多个 TCP 从站共享监听时，IP、端口须完全相同，Unit ID 不同；RTU 共享串口时，串口参数须一致，Unit ID 不同。
+- 正常轮询、递增和数据同步不反复提示成功；对应操作恢复后会清除之前的异常。
+- TCP 请求失败或超时后，下一次重试或读取会重新连接。写入超时仍可能已执行，写入触发型寄存器时可关闭重试。
+- 日志最新在上；滚动查看历史或展开详情会暂停显示更新，点击“继续”恢复，期间仍会记录新事件。
+- 重启仅恢复配置，不恢复连接、数值和日志。

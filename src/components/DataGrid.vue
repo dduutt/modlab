@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { formatRegisterValue } from '../utils/modbusFormatter';
 import { Copy, Edit3, RotateCcw } from '@lucide/vue';
 import EditValueModal from './EditValueModal.vue';
@@ -13,6 +13,7 @@ const props = defineProps<{
   byteOrder?: string;
   functionCode?: string;
   raw?: boolean;
+  writable?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -41,10 +42,21 @@ const isCoil = computed(() => {
 });
 
 const is32Bit = computed(() => {
-  return props.dataType === 'Float32' || props.dataType === 'Int32' || props.dataType === 'UInt32';
+  return !isCoil.value && (props.dataType === 'Float32' || props.dataType === 'Int32' || props.dataType === 'UInt32');
+});
+
+watch(() => [props.writable, props.startAddress, props.count, props.dataType, props.functionCode, props.format, props.byteOrder], () => {
+  showEditModal.value = false;
+  contextMenu.value.show = false;
 });
 
 const activeFormat = computed(() => (isCoil.value ? 'Dec' : props.format || 'Dec'));
+
+function isEditableAddress(addr: number): boolean {
+  const target = is32Bit.value && (addr - props.startAddress) % 2 !== 0 ? addr - 1 : addr;
+  const width = is32Bit.value ? 2 : 1;
+  return target >= props.startAddress && target + width <= props.startAddress + props.count;
+}
 
 const rows = computed(() => {
   const result: number[] = [];
@@ -58,12 +70,13 @@ const rows = computed(() => {
 });
 
 function getPrimaryCellText(addr: number): string {
+  if (addr < props.startAddress || addr >= props.startAddress + props.count) return '-';
   if (isCoil.value) {
     return (props.values[addr] ?? 0) === 1 ? '1' : '0';
   }
   if (is32Bit.value) {
     const offset = addr - props.startAddress;
-    if (offset % 2 !== 0) {
+    if (offset % 2 !== 0 || addr + 1 >= props.startAddress + props.count) {
       return '-';
     }
     const raw1 = props.values[addr] ?? 0;
@@ -74,6 +87,7 @@ function getPrimaryCellText(addr: number): string {
 }
 
 function handleCellDoubleClick(addr: number) {
+  if (props.writable === false || !isEditableAddress(addr)) return;
   if (isCoil.value) {
     const current = props.values[addr] ?? 0;
     emit('update-cell', addr, current === 1 ? 0 : 1);
@@ -89,6 +103,7 @@ function handleCellDoubleClick(addr: number) {
 }
 
 function handleModalSave(addr: number, parsed: { word1: number; word2?: number } | number) {
+  if (props.writable === false || !isEditableAddress(addr)) return;
   if (typeof parsed === 'object') {
     emit('update-cell-pair', addr, parsed.word1, addr + 1, parsed.word2 ?? 0);
   } else if (!isNaN(parsed)) {
@@ -98,6 +113,10 @@ function handleModalSave(addr: number, parsed: { word1: number; word2?: number }
 
 function handleContextMenu(e: MouseEvent, addr: number) {
   e.preventDefault();
+  if (!isEditableAddress(addr)) {
+    closeContextMenu();
+    return;
+  }
   contextMenu.value = {
     show: true,
     x: e.clientX,
@@ -130,6 +149,7 @@ function triggerEdit() {
 }
 
 function resetToZero() {
+  if (props.writable === false) return;
   if (contextMenu.value.address !== null) {
     let addr = contextMenu.value.address;
     if (is32Bit.value && (addr - props.startAddress) % 2 !== 0) {
@@ -151,7 +171,7 @@ function resetToZero() {
       <table class="w-full text-sm text-center border-collapse">
         <thead>
           <tr class="bg-gray-50/80 border-b border-gray-200 text-gray-600 font-medium">
-            <th class="py-2.5 px-2 w-20 shrink-0 border-r border-gray-200 font-semibold select-none">Address</th>
+            <th class="py-2.5 px-2 w-20 shrink-0 border-r border-gray-200 font-semibold select-none">{{ $t('dataGrid.address') }}</th>
             <th v-for="col in 10" :key="col - 1" class="py-2.5 px-2 min-w-[70px] whitespace-nowrap border-r border-gray-200 last:border-r-0 select-none">
               {{ col - 1 }}
             </th>
@@ -213,14 +233,14 @@ function resetToZero() {
       class="fixed z-50 bg-white border border-gray-200 shadow-xl rounded-xl py-1 w-36 text-xs text-gray-700 animate-in fade-in zoom-in-95 duration-100 select-none"
     >
       <button @click="copyValue" class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-100 w-full text-left font-medium cursor-pointer">
-        <Copy class="w-3.5 h-3.5 text-gray-500" /> Copy Value
+        <Copy class="w-3.5 h-3.5 text-gray-500" /> {{ $t('common.copy') }}
       </button>
-      <button @click="triggerEdit" class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-100 w-full text-left font-medium cursor-pointer">
-        <Edit3 class="w-3.5 h-3.5 text-gray-500" /> Edit Value
+      <button @click="triggerEdit" :disabled="writable === false" class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-100 w-full text-left font-medium cursor-pointer disabled:opacity-50">
+        <Edit3 class="w-3.5 h-3.5 text-gray-500" /> {{ $t('common.edit') }}
       </button>
       <div class="my-1 border-t border-gray-100"></div>
-      <button @click="resetToZero" class="flex items-center gap-2 px-3 py-1.5 hover:bg-red-50 text-red-600 w-full text-left font-medium cursor-pointer">
-        <RotateCcw class="w-3.5 h-3.5 text-red-500" /> Reset to 0
+      <button @click="resetToZero" :disabled="writable === false" class="flex items-center gap-2 px-3 py-1.5 hover:bg-red-50 text-red-600 w-full text-left font-medium cursor-pointer disabled:opacity-50">
+        <RotateCcw class="w-3.5 h-3.5 text-red-500" /> {{ $t('dataGrid.resetToZero') }}
       </button>
     </div>
   </div>

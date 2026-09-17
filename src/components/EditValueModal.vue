@@ -20,13 +20,14 @@ const emit = defineEmits<{
 
 const newValueInput = ref<string>('');
 const inputRef = ref<HTMLInputElement | null>(null);
+const invalidValue = ref(false);
 
 const maxLength = computed(() => {
   if (props.format === 'Hex') {
     return props.is32Bit ? 10 : 6; // 0xFFFFFFFF or 0xFFFF
   }
   if (props.dataType === 'Float32') {
-    return 15;
+    return 32;
   }
   if (props.dataType === 'Int32') {
     return 11; // -2147483648
@@ -44,6 +45,7 @@ watch(
   () => props.show,
   async (isShowing) => {
     if (isShowing) {
+      invalidValue.value = false;
       newValueInput.value = props.currentValueText;
       await nextTick();
       inputRef.value?.focus();
@@ -56,11 +58,12 @@ watch(
 function handleInputFilter(e: Event) {
   const target = e.target as HTMLInputElement;
   let val = target.value;
+  invalidValue.value = false;
 
   if (props.format === 'Hex') {
-    val = val.replace(/[^0-9a-fA-F--xX]/g, '');
+    val = val.replace(/[^0-9a-fA-FxX]/g, '');
   } else if (props.dataType === 'Float32') {
-    val = val.replace(/[^0-9.-]/g, '');
+    val = val.replace(/[^0-9.eE+-]/g, '');
   } else if (props.dataType === 'Int16' || props.dataType === 'Int32') {
     val = val.replace(/[^0-9-]/g, '');
   } else {
@@ -72,6 +75,7 @@ function handleInputFilter(e: Event) {
   }
 
   newValueInput.value = val;
+  target.value = val;
 }
 
 function handleSave() {
@@ -80,15 +84,19 @@ function handleSave() {
     return;
   }
 
-  const parsed = parseFormattedRegisterValue(
-    newValueInput.value,
-    props.format,
-    props.dataType,
-    props.byteOrder
-  );
+  try {
+    const parsed = parseFormattedRegisterValue(
+      newValueInput.value,
+      props.format,
+      props.dataType,
+      props.byteOrder
+    );
 
-  emit('save', props.address, parsed);
-  emit('close');
+    emit('save', props.address, parsed);
+    emit('close');
+  } catch {
+    invalidValue.value = true;
+  }
 }
 </script>
 
@@ -98,7 +106,7 @@ function handleSave() {
       <!-- Modal Header -->
       <div class="flex items-center justify-between px-5 py-3.5 border-b border-gray-100 bg-gray-50/50">
         <div class="flex items-center gap-2">
-          <h3 class="font-semibold text-gray-900 text-sm">Edit Register Value</h3>
+          <h3 class="font-semibold text-gray-900 text-sm">{{ $t('dataGrid.editRegisterValue') }}</h3>
         </div>
         <button @click="emit('close')" class="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-200/60 rounded-lg transition cursor-pointer">
           <X class="w-4 h-4" />
@@ -108,21 +116,21 @@ function handleSave() {
       <!-- Modal Body -->
       <div class="p-4 space-y-3 text-xs">
         <div class="flex items-center justify-between bg-gray-50 px-3 py-2 rounded-xl border border-gray-100">
-          <span class="text-gray-500 font-medium">Address</span>
+          <span class="text-gray-500 font-medium">{{ $t('dataGrid.address') }}</span>
           <span class="font-mono font-bold text-gray-900">
             {{ address !== null ? (is32Bit ? `${address} - ${address + 1}` : address) : '-' }}
           </span>
         </div>
 
         <div class="flex items-center justify-between bg-gray-50 px-3 py-2 rounded-xl border border-gray-100">
-          <span class="text-gray-500 font-medium">Format / Type</span>
+          <span class="text-gray-500 font-medium">{{ $t('dataGrid.formatType') }}</span>
           <span class="font-mono text-blue-600 font-semibold">
             {{ dataType }} ({{ format }})
           </span>
         </div>
 
         <div>
-          <label class="block text-xs font-semibold text-gray-500 mb-1">New Value</label>
+          <label class="block text-xs font-semibold text-gray-500 mb-1">{{ $t('dataGrid.newValue') }}</label>
           <input
             ref="inputRef"
             :value="newValueInput"
@@ -133,6 +141,7 @@ function handleSave() {
             type="text"
             class="w-full px-3 py-2 border border-gray-200 rounded-xl outline-none focus:border-blue-500 font-mono text-sm font-semibold bg-white text-gray-900 shadow-2xs"
           />
+          <p v-if="invalidValue" role="alert" class="mt-2 text-red-600">{{ $t('dataGrid.invalidValue') }}</p>
         </div>
       </div>
 
@@ -142,13 +151,13 @@ function handleSave() {
           @click="emit('close')"
           class="px-3.5 py-1.5 rounded-xl text-gray-600 hover:bg-gray-200/60 font-medium transition text-xs cursor-pointer"
         >
-          Cancel
+          {{ $t('common.cancel') }}
         </button>
         <button
           @click="handleSave"
           class="px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs transition text-xs cursor-pointer"
         >
-          Save
+          {{ $t('common.save') }}
         </button>
       </div>
     </div>

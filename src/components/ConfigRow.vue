@@ -14,6 +14,7 @@ export interface ModbusConfig {
 const props = defineProps<{
   config: ModbusConfig;
   connected?: boolean;
+  busy?: boolean;
   role?: 'Slave' | 'Master';
 }>();
 
@@ -22,16 +23,25 @@ const emit = defineEmits<{
 }>();
 
 function updateField<K extends keyof ModbusConfig>(key: K, value: ModbusConfig[K]) {
-  emit('update:config', { ...props.config, [key]: value });
+  if (typeof value === 'number' && !Number.isFinite(value)) return;
+  const next = { ...props.config, [key]: value };
+  next.unitId = Math.max(0, Math.min(255, Math.trunc(next.unitId)));
+  next.startAddress = Math.max(0, Math.min(65535, Math.trunc(next.startAddress)));
+  const maxCount = next.functionCode === '0x01' || next.functionCode === '0x02' ? 2000 : 125;
+  next.count = Math.max(1, Math.min(maxCount, 65536 - next.startAddress, Math.trunc(next.count)));
+  next.interval = Math.max(100, Math.min(60000, Math.trunc(next.interval)));
+  emit('update:config', next);
 }
 </script>
 
 <template>
-  <div class="flex items-center justify-between gap-2 px-6 py-2.5 bg-white border-b border-gray-100 text-xs select-none w-full min-h-[52px]">
+  <fieldset :disabled="busy" class="flex flex-wrap shrink-0 items-center justify-between gap-2 px-6 py-2.5 bg-white border-b border-gray-100 text-xs select-none w-full min-w-0 min-h-[52px]">
     <div class="flex flex-col items-start gap-1 shrink-0">
       <label class="text-xs font-semibold text-gray-600 pl-2">Unit ID</label>
       <input
         type="number"
+        min="0"
+        max="255"
         :value="config.unitId"
         :disabled="connected && role === 'Slave'"
         @input="updateField('unitId', Number(($event.target as HTMLInputElement).value))"
@@ -45,7 +55,7 @@ function updateField<K extends keyof ModbusConfig>(key: K, value: ModbusConfig[K
     </div>
 
     <div class="flex flex-col items-start gap-1 shrink-0">
-      <label class="text-xs font-semibold text-gray-600 pl-2">Function</label>
+      <label class="text-xs font-semibold text-gray-600 pl-2">{{ $t('config.functionCode') }}</label>
       <select
         :value="config.functionCode"
         :disabled="connected"
@@ -65,9 +75,11 @@ function updateField<K extends keyof ModbusConfig>(key: K, value: ModbusConfig[K
     </div>
 
     <div class="flex flex-col items-start gap-1 shrink-0">
-      <label class="text-xs font-semibold text-gray-600 pl-2">Start</label>
+      <label class="text-xs font-semibold text-gray-600 pl-2">{{ $t('config.startAddress') }}</label>
       <input
         type="number"
+        min="0"
+        max="65535"
         :value="config.startAddress"
         :disabled="connected"
         @input="updateField('startAddress', Number(($event.target as HTMLInputElement).value))"
@@ -81,9 +93,11 @@ function updateField<K extends keyof ModbusConfig>(key: K, value: ModbusConfig[K
     </div>
 
     <div class="flex flex-col items-start gap-1 shrink-0">
-      <label class="text-xs font-semibold text-gray-600 pl-2">Count</label>
+      <label class="text-xs font-semibold text-gray-600 pl-2">{{ $t('config.count') }}</label>
       <input
         type="number"
+        min="1"
+        :max="config.functionCode === '0x01' || config.functionCode === '0x02' ? 2000 : 125"
         :value="config.count"
         :disabled="connected"
         @input="updateField('count', Number(($event.target as HTMLInputElement).value))"
@@ -97,7 +111,7 @@ function updateField<K extends keyof ModbusConfig>(key: K, value: ModbusConfig[K
     </div>
 
     <div class="flex flex-col items-start gap-1 shrink-0">
-      <label class="text-xs font-semibold text-gray-600 pl-2">Data Type</label>
+      <label class="text-xs font-semibold text-gray-600 pl-2">{{ $t('config.dataType') }}</label>
       <select
         :value="config.dataType"
         :disabled="config.functionCode === '0x01' || config.functionCode === '0x02'"
@@ -112,12 +126,13 @@ function updateField<K extends keyof ModbusConfig>(key: K, value: ModbusConfig[K
         <option value="Int16">Int16</option>
         <option value="UInt16">UInt16</option>
         <option value="Int32">Int32</option>
+        <option value="UInt32">UInt32</option>
         <option value="Float32">Float32</option>
       </select>
     </div>
 
     <div class="flex flex-col items-start gap-1 shrink-0">
-      <label class="text-xs font-semibold text-gray-600 pl-2">Format</label>
+      <label class="text-xs font-semibold text-gray-600 pl-2">{{ $t('config.format') }}</label>
       <select
         :value="config.format"
         :disabled="config.functionCode === '0x01' || config.functionCode === '0x02'"
@@ -135,7 +150,7 @@ function updateField<K extends keyof ModbusConfig>(key: K, value: ModbusConfig[K
     </div>
 
     <div class="flex flex-col items-start gap-1 shrink-0">
-      <label class="text-xs font-semibold text-gray-600 pl-2">Byte Order</label>
+      <label class="text-xs font-semibold text-gray-600 pl-2">{{ $t('config.byteOrder') }}</label>
       <select
         :value="config.byteOrder"
         :disabled="config.functionCode === '0x01' || config.functionCode === '0x02'"
@@ -155,10 +170,12 @@ function updateField<K extends keyof ModbusConfig>(key: K, value: ModbusConfig[K
     </div>
 
     <div class="flex flex-col items-start gap-1 shrink-0">
-      <label class="text-xs font-semibold text-gray-600 pl-2">Interval</label>
+      <label class="text-xs font-semibold text-gray-600 pl-2">{{ $t('config.interval') }}</label>
       <input
         type="number"
         :value="config.interval"
+        min="100"
+        max="60000"
         @input="updateField('interval', Number(($event.target as HTMLInputElement).value))"
         class="w-20 h-8 px-3 border border-gray-200 rounded-full outline-none focus:border-blue-500 text-center font-medium bg-white text-xs shadow-2xs"
       />
@@ -182,5 +199,5 @@ function updateField<K extends keyof ModbusConfig>(key: K, value: ModbusConfig[K
         ></div>
       </button>
     </div>
-  </div>
+  </fieldset>
 </template>

@@ -9,20 +9,55 @@ import SettingsModal, { type ConnectionConfig } from './components/SettingsModal
 import TrafficLog, { type LogEntry } from './components/TrafficLog.vue';
 import NewDeviceModal from './components/NewDeviceModal.vue';
 import ConfirmModal from './components/ConfirmModal.vue';
-import TrafficLogWindow from './components/TrafficLogWindow.vue';
+import { appendLog } from './utils/logging';
 import { ModbusService } from './services/modbusService';
 import { generateRandomRegisters, incrementFormattedValue } from './utils/modbusFormatter';
-import { emit as tauriEmit } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-const isTrafficLogRoute = ref<boolean>(false);
+import { useI18n } from 'vue-i18n';
 
-onMounted(() => {
-  if (window.location.hash === '#/traffic-log') {
-    isTrafficLogRoute.value = true;
+const { locale } = useI18n();
+const language = computed<'en' | 'zh'>(() => locale.value as 'en' | 'zh');
+function toggleLanguage() {
+  locale.value = locale.value === 'en' ? 'zh' : 'en';
+}
+
+let unlistenTraffic: UnlistenFn | null = null;
+
+onMounted(async () => {
+  try {
+    unlistenTraffic = await listen<any>('traffic-log-entry', (event) => {
+      const entry = event.payload;
+      if (!entry || !entry.sessionId || entry.origin === 'frontend') return;
+      const targetTab = tabs.value.find(t => t.id === entry.sessionId);
+      if (targetTab) {
+        if (!targetTab.logs.some(l => l.id === entry.id)) {
+          const log: LogEntry = {
+            id: entry.id,
+            time: entry.timestamp || new Date().toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(Date.now() % 1000).padStart(3, '0'),
+            deviceName: targetTab.title,
+            sessionId: targetTab.id,
+            timestampMs: entry.timestampMs ?? Date.now(),
+            durationMs: entry.durationMs,
+            level: entry.level || 'info',
+            kind: entry.kind || 'frame',
+            detail: entry.detail ?? true,
+            direction: entry.direction,
+            message: entry.message,
+            bytes: entry.bytes,
+            protocol: entry.protocol,
+            complete: entry.complete,
+            role: targetTab.connection.role,
+          };
+          log.time = new Date(log.timestampMs).toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(log.timestampMs % 1000).padStart(3, '0');
+          if (log.kind === 'frame' || log.level === 'error') targetTab.logs = appendLog(targetTab.logs, log);
+          trimLogs(targetTab);
+        }
+      }
+    });
+  } catch (err) {
+    console.error('Failed to register traffic-log-entry listener in App.vue:', err);
   }
-  window.addEventListener('hashchange', () => {
-    isTrafficLogRoute.value = window.location.hash === '#/traffic-log';
-  });
 });
 
 interface SessionTab {
@@ -30,6 +65,9 @@ interface SessionTab {
   title: string;
   connection: ConnectionConfig;
   connected: boolean;
+  busy?: boolean;
+  connectionVersion?: number;
+  valueVersion?: number;
   config: ModbusConfig;
   values: Record<number, number>;
   logs: LogEntry[];
@@ -73,8 +111,8 @@ function getDefaultTabs(): SessionTab[] {
       },
       values: {},
       logs: [],
-      statusMessage: '[Slave 2] Connect before writing.',
-      statusType: 'error',
+      statusMessage: '[Slave 2] Disconnected.',
+      statusType: 'info',
     },
   ];
 }
@@ -171,43 +209,85 @@ const existingNames = computed(() => {
 const allLogs = computed(() => {
   const aggregated: LogEntry[] = [];
   for (const tab of tabs.value) {
-    aggregated.push(...tab.logs);
+    aggregated.push(...tab.logs.map(log => ({ ...log, deviceName: tab.title })));
   }
-  return aggregated;
+  return aggregated.sort((a, b) => b.timestampMs - a.timestampMs);
 });
 
-// Broadcast log entry via Tauri Event Bus
-function broadcastLog(session: SessionTab, direction: 'TX' | 'RX', message: string, bytes: string) {
-  const timestamp = new Date().toLocaleTimeString();
-  const logEntry = {
-    id: Math.random().toString(36).slice(2),
-    sessionId: session.id,
-    sessionTitle: session.title,
-    direction,
-    message,
-    bytes,
-    timestamp,
-  };
-
-  session.logs.unshift({
-    id: logEntry.id,
-    time: timestamp,
-    deviceName: session.title,
-    direction,
-    message,
-    bytes,
-  });
-  if (session.logs.length > 100) session.logs.pop();
-
-  try {
-    tauriEmit('traffic-log-entry', logEntry).catch(() => {});
-  } catch (e) {
-    // Ignore in non-Tauri
-  }
+// Bound memory while retaining individual transfers in arrival order.
+function trimLogs(session: SessionTab) {
+  session.logs = session.logs.slice(0, 2000);
 }
+
+function broadcastLog(session: SessionTab, direction: 'TX' | 'RX', message: string, bytes: string, detail = false, startedAt?: number) {
+  const timestampMs = Date.now();
+  const level = /failed/i.test(message) ? 'error' : /restored/i.test(message) ? 'success' : 'info';
+  const logEntry = {
+    origin: 'frontend', id: crypto.randomUUID(), sessionId: session.id, sessionTitle: session.title,
+    direction, message, bytes, timestampMs,
+    durationMs: startedAt === undefined ? undefined : Math.max(0, timestampMs - startedAt),
+    timestamp: new Date(timestampMs).toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(timestampMs % 1000).padStart(3, '0'),
+    kind: 'operation' as const, level: level as 'error' | 'success' | 'info',
+    detail: (detail || direction === 'TX') && level !== 'error',
+  };
+  if (level !== 'error' || !/read|write|connect|disconnect/i.test(message)) return;
+  session.logs = appendLog(session.logs, { ...logEntry, time: logEntry.timestamp, deviceName: session.title });
+  trimLogs(session);
+}
+
+function logFailure(session: SessionTab, operation: string, error: unknown, startedAt?: number) {
+  broadcastLog(session, 'RX', `${operation} Failed`, error instanceof Error ? error.message : String(error), false, startedAt);
+}
+
+function readTabRegisters(tab: SessionTab) {
+  return ModbusService.readRegisters(
+    tab.id,
+    tab.config.startAddress,
+    tab.config.count,
+    tab.config.functionCode,
+    tab.config.unitId,
+    tab.connection.timeoutMs,
+    tab.connection.retries,
+  );
+}
+
+function writeTabRegister(tab: SessionTab, address: number, value: number) {
+  return ModbusService.writeRegister(
+    tab.id,
+    address,
+    value,
+    tab.config.functionCode,
+    tab.config.unitId,
+    tab.connection.timeoutMs,
+    tab.connection.retries,
+  );
+}
+
+function captureTabRequest(tab: SessionTab) {
+  const connection = tab.connection;
+  const version = tab.connectionVersion;
+  const { unitId, functionCode, startAddress, count } = tab.config;
+  return () => tab.connected && !tab.busy && tab.connection === connection
+    && tab.connectionVersion === version && tab.config.unitId === unitId
+    && tab.config.functionCode === functionCode && tab.config.startAddress === startAddress
+    && tab.config.count === count;
+}
+
+watch(() => tabs.value.map(tab => ({ id: tab.id, unitId: tab.config.unitId, functionCode: tab.config.functionCode })), (current, previous) => {
+  for (const next of current) {
+    const before = previous.find(tab => tab.id === next.id);
+    if (before && (before.unitId !== next.unitId || before.functionCode !== next.functionCode)) {
+      const tab = tabs.value.find(tab => tab.id === next.id)!;
+      tab.values = {};
+      tab.connectionVersion = (tab.connectionVersion ?? 0) + 1;
+    }
+  }
+});
 
 // Robust Multi-Tab Timer Management
 const tabTimers = new Map<string, { pollTimer?: ReturnType<typeof setInterval>; autoIncTimer?: ReturnType<typeof setInterval> }>();
+const pollingInFlight = new Set<string>();
+const incrementInFlight = new Set<string>();
 
 function clearTabTimers(tabId: string) {
   const existing = tabTimers.get(tabId);
@@ -219,15 +299,8 @@ function clearTabTimers(tabId: string) {
 }
 
 function updateTabTimers(tab: SessionTab) {
-  let timers = tabTimers.get(tab.id) || {};
-  if (timers.pollTimer) {
-    clearInterval(timers.pollTimer);
-    timers.pollTimer = undefined;
-  }
-  if (timers.autoIncTimer) {
-    clearInterval(timers.autoIncTimer);
-    timers.autoIncTimer = undefined;
-  }
+  clearTabTimers(tab.id);
+  const timers: { pollTimer?: ReturnType<typeof setInterval>; autoIncTimer?: ReturnType<typeof setInterval> } = {};
 
   // 1. Master Polling Timer
   if (tab.connection.role === 'Master' && tab.connected && tab.isPolling) {
@@ -237,28 +310,66 @@ function updateTabTimers(tab: SessionTab) {
         timers.pollTimer = undefined;
         return;
       }
-      const unit = tab.config.unitId.toString(16).padStart(2, '0');
-      const start = tab.config.startAddress.toString(16).padStart(4, '0');
-      const count = tab.config.count.toString(16).padStart(4, '0');
-
-      const txBytes = `${unit} 03 ${start.slice(0, 2)} ${start.slice(2)} ${count.slice(0, 2)} ${count.slice(2)} C5 D3`;
-      broadcastLog(tab, 'TX', `Read (${tab.config.functionCode}) Req`, txBytes);
+      if (pollingInFlight.has(tab.id) || tab.busy) return;
+      pollingInFlight.add(tab.id);
+      const operationStarted = Date.now();
+      broadcastLog(tab, 'TX', `Read (${tab.config.functionCode}) Req`, `Unit: ${tab.config.unitId}, Start: ${tab.config.startAddress}, Count: ${tab.config.count}`, true);
 
       try {
-        const fetched = await ModbusService.readRegisters(tab.id, tab.config.startAddress, tab.config.count);
+        const fetched = await readTabRegisters(tab);
+        if (tabTimers.get(tab.id) !== timers || !tab.connected) return;
         if (fetched && Object.keys(fetched).length > 0) {
           tab.values = { ...tab.values, ...fetched };
         }
+        if (tab.statusType === 'error' && (tab.statusMessage.startsWith(`[${tab.title}] Poll failed:`) || tab.statusMessage.startsWith(`[${tab.title}] Read failed:`))) {
+          broadcastLog(tab, 'RX', 'Communication restored', '');
+          tab.statusMessage = `[${tab.title}] Communication restored.`;
+          tab.statusType = 'success';
+        }
+        broadcastLog(tab, 'RX', `Read (${tab.config.functionCode}) Resp`, `Unit: ${tab.config.unitId}, Start: ${tab.config.startAddress}, Count: ${Object.keys(fetched).length}`, true, operationStarted);
       } catch (err) {
+        if (tabTimers.get(tab.id) !== timers || !tab.connected) return;
         console.error(`[${tab.title}] Poll error:`, err);
+        tab.statusMessage = `[${tab.title}] Poll failed: ${err instanceof Error ? err.message : err}`;
+        tab.statusType = 'error';
+        broadcastLog(tab, 'RX', `Read (${tab.config.functionCode}) Failed`, String(err), false, operationStarted);
+      } finally {
+        pollingInFlight.delete(tab.id);
       }
-
-      const rxBytes = `${unit} 03 50 ${Array.from({ length: 8 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join(' ')} ...`;
-      broadcastLog(tab, 'RX', `Read (${tab.config.functionCode}) Resp`, rxBytes);
     }, tab.config.interval || 1000);
   }
 
   // 2. Slave Auto Increment Timer
+  // Read the local slave memory so external master writes reach the grid.
+  // This is a local snapshot, not evidence of successful wire communication.
+  if (tab.connection.role === 'Slave' && tab.connected && !tab.autoIncrement) {
+    timers.pollTimer = setInterval(async () => {
+      if (!tab.connected || tab.busy || tab.autoIncrement || pollingInFlight.has(tab.id)) return;
+      const isCurrent = captureTabRequest(tab);
+      const valueVersion = tab.valueVersion;
+      pollingInFlight.add(tab.id);
+      try {
+        const fetched = await readTabRegisters(tab);
+        if (isCurrent() && tabTimers.get(tab.id) === timers && tab.valueVersion === valueVersion) {
+          tab.values = { ...fetched };
+          if (tab.statusMessage.startsWith(`[${tab.title}] Sync failed:`)) {
+            broadcastLog(tab, 'RX', 'Sync restored', '');
+            tab.statusMessage = `[${tab.title}] Listening.`;
+            tab.statusType = 'info';
+          }
+        }
+      } catch (err) {
+        if (isCurrent() && tabTimers.get(tab.id) === timers) {
+          if (!tab.statusMessage.startsWith(`[${tab.title}] Sync failed:`)) logFailure(tab, 'Sync', err);
+          tab.statusMessage = `[${tab.title}] Sync failed: ${err instanceof Error ? err.message : err}`;
+          tab.statusType = 'error';
+        }
+      } finally {
+        pollingInFlight.delete(tab.id);
+      }
+    }, 1000);
+  }
+
   if (tab.connection.role === 'Slave' && tab.connected && tab.autoIncrement) {
     timers.autoIncTimer = setInterval(async () => {
       if (!tab.connected || !tab.autoIncrement) {
@@ -266,23 +377,65 @@ function updateTabTimers(tab: SessionTab) {
         timers.autoIncTimer = undefined;
         return;
       }
-      const cfg = tab.config;
-      const is32 = cfg.dataType === 'Float32' || cfg.dataType === 'Int32' || cfg.dataType === 'UInt32';
-      const step = is32 ? 2 : 1;
-      const newValues = { ...tab.values };
+      if (incrementInFlight.has(tab.id) || tab.busy) return;
+      incrementInFlight.add(tab.id);
+      try {
+        const cfg = { ...tab.config };
+        const isCoil = cfg.functionCode === '0x01' || cfg.functionCode === '0x02';
+        const is32 = !isCoil && (cfg.dataType === 'Float32' || cfg.dataType === 'Int32' || cfg.dataType === 'UInt32');
+        const step = is32 ? 2 : 1;
+        const newValues = { ...await readTabRegisters(tab) };
+        if (!tab.connected || tab.busy || tabTimers.get(tab.id) !== timers) return;
+        let completed = true;
 
-      for (let addr = cfg.startAddress; addr < cfg.startAddress + cfg.count; addr += step) {
-        const raw1 = newValues[addr] ?? 0;
-        const raw2 = is32 ? (newValues[addr + 1] ?? 0) : undefined;
-        const inc = incrementFormattedValue(raw1, cfg.format, cfg.dataType, cfg.byteOrder, raw2);
-        newValues[addr] = inc.word1;
-        await ModbusService.writeRegister(tab.id, addr, inc.word1).catch(() => {});
-        if (is32 && inc.word2 !== undefined && addr + 1 < cfg.startAddress + cfg.count) {
-          newValues[addr + 1] = inc.word2;
-          await ModbusService.writeRegister(tab.id, addr + 1, inc.word2).catch(() => {});
+        for (let addr = cfg.startAddress; addr < cfg.startAddress + cfg.count; addr += step) {
+          if (!tab.connected || tab.busy || !tab.autoIncrement || tabTimers.get(tab.id) !== timers) return;
+          if (is32 && addr + 1 >= cfg.startAddress + cfg.count) break;
+          const raw1 = newValues[addr] ?? 0;
+          const raw2 = is32 ? (newValues[addr + 1] ?? 0) : undefined;
+          try {
+            const inc = incrementFormattedValue(raw1, cfg.format, isCoil ? 'Coil' : cfg.dataType, cfg.byteOrder, raw2);
+            if (is32 && inc.word2 !== undefined && addr + 1 < cfg.startAddress + cfg.count) {
+              await ModbusService.writeRegisters(
+                tab.id,
+                addr,
+                [inc.word1, inc.word2],
+                tab.config.functionCode,
+                tab.config.unitId,
+                tab.connection.timeoutMs,
+                tab.connection.retries
+              );
+              newValues[addr] = inc.word1;
+              newValues[addr + 1] = inc.word2;
+            } else {
+              await writeTabRegister(tab, addr, inc.word1);
+              newValues[addr] = inc.word1;
+            }
+          } catch (err: any) {
+          if (!tab.statusMessage.startsWith(`[${tab.title}] Auto increment failed:`)) logFailure(tab, 'Auto increment', err);
+            tab.statusMessage = `[${tab.title}] Auto increment failed: ${err?.message || err}`;
+            tab.statusType = 'error';
+            completed = false;
+            break;
+          }
         }
+        if (tab.connected && tabTimers.get(tab.id) === timers) {
+          tab.values = newValues;
+          if (completed && tab.statusType === 'error' && tab.statusMessage.startsWith(`[${tab.title}] Auto increment failed:`)) {
+            broadcastLog(tab, 'RX', 'Auto increment restored', '');
+            tab.statusMessage = `[${tab.title}] Listening.`;
+            tab.statusType = 'info';
+          }
+        }
+      } catch (err) {
+        if (tab.connected && tabTimers.get(tab.id) === timers) {
+          if (!tab.statusMessage.startsWith(`[${tab.title}] Auto increment failed:`)) logFailure(tab, 'Auto increment', err);
+          tab.statusMessage = `[${tab.title}] Auto increment failed: ${err instanceof Error ? err.message : err}`;
+          tab.statusType = 'error';
+        }
+      } finally {
+        incrementInFlight.delete(tab.id);
       }
-      tab.values = newValues;
     }, tab.config.interval || 1000);
   }
 
@@ -303,6 +456,8 @@ watch(
     dataType: t.config.dataType,
     format: t.config.format,
     byteOrder: t.config.byteOrder,
+    functionCode: t.config.functionCode,
+    unitId: t.config.unitId,
   })),
   (tabStates) => {
     for (const tabState of tabStates) {
@@ -321,12 +476,16 @@ watch(
 );
 
 onUnmounted(() => {
+  if (unlistenTraffic) {
+    unlistenTraffic();
+  }
   for (const tabId of tabTimers.keys()) {
     clearTabTimers(tabId);
   }
 });
 
 function handleSelectTab(id: string) {
+  showSettings.value = false;
   activeTabId.value = id;
 }
 
@@ -380,6 +539,7 @@ function handleCloseTabRequest(id: string) {
   if (tabs.value.length <= 1) return;
   const tab = tabs.value.find(t => t.id === id);
   if (!tab) return;
+  if (tab.busy) return;
   if (tab.connected) {
     tabToCloseId.value = id;
     showConfirmModal.value = true;
@@ -388,17 +548,25 @@ function handleCloseTabRequest(id: string) {
   }
 }
 
-function handleConfirmCloseTab() {
-  if (tabToCloseId.value) {
-    const tab = tabs.value.find(t => t.id === tabToCloseId.value);
-    if (tab && tab.connected) {
-      ModbusService.disconnect(tab.id).catch(() => {});
-      tab.connected = false;
-    }
-    handleCloseTab(tabToCloseId.value);
-  }
+async function handleConfirmCloseTab() {
+  const id = tabToCloseId.value;
   showConfirmModal.value = false;
   tabToCloseId.value = null;
+  const tab = tabs.value.find(t => t.id === id);
+  if (!tab || tab.busy) return;
+  tab.connectionVersion = (tab.connectionVersion ?? 0) + 1;
+  tab.busy = true;
+  try {
+    if (tab.connected) await ModbusService.disconnect(tab.id);
+    tab.connected = false;
+    handleCloseTab(tab.id);
+  } catch (err) {
+    logFailure(tab, 'Disconnect', err);
+    tab.statusMessage = `[${tab.title}] Disconnect failed: ${err instanceof Error ? err.message : err}`;
+    tab.statusType = 'error';
+  } finally {
+    tab.busy = false;
+  }
 }
 
 function handleCloseTab(id: string) {
@@ -411,122 +579,184 @@ function handleCloseTab(id: string) {
 }
 
 async function handleToggleConnect() {
-  if (!activeTab.value) return;
-  if (activeTab.value.connected) {
-    try {
-      broadcastLog(activeTab.value, 'TX', `Disconnect Req`, `Session: ${activeTab.value.title}`);
-      await ModbusService.disconnect(activeTab.value.id);
-      activeTab.value.connected = false;
-      activeTab.value.isPolling = false;
-      activeTab.value.autoIncrement = false;
-      clearTabTimers(activeTab.value.id);
-      activeTab.value.statusMessage = `[${activeTab.value.title}] Disconnected.`;
-      activeTab.value.statusType = 'info';
-      broadcastLog(activeTab.value, 'RX', `Disconnected OK`, `Status: Closed`);
-    } catch (err: any) {
-      activeTab.value.statusMessage = `[${activeTab.value.title}] Disconnect failed: ${err?.message || err}`;
-      activeTab.value.statusType = 'error';
+  const operationStarted = Date.now();
+  const tab = activeTab.value;
+  if (!tab || tab.busy) return;
+  tab.connectionVersion = (tab.connectionVersion ?? 0) + 1;
+  tab.busy = true;
+  try {
+    if (tab.connected) {
+      try {
+        broadcastLog(tab, 'TX', `Disconnect Req`, `Session: ${tab.title}`);
+        await ModbusService.disconnect(tab.id);
+        tab.connected = false;
+        tab.isPolling = false;
+        tab.autoIncrement = false;
+        clearTabTimers(tab.id);
+        tab.statusMessage = `[${tab.title}] Disconnected.`;
+        tab.statusType = 'info';
+        broadcastLog(tab, 'RX', `Disconnected OK`, `Status: Closed`, false, operationStarted);
+      } catch (err: any) {
+        logFailure(tab, 'Disconnect', err, operationStarted);
+        tab.statusMessage = `[${tab.title}] Disconnect failed: ${err?.message || err}`;
+        tab.statusType = 'error';
+      }
+    } else {
+      try {
+        const targetStr = tab.connection.protocol === 'RTU'
+          ? `${tab.connection.serialPort} (${tab.connection.baudRate})`
+          : `${tab.connection.ip}:${tab.connection.port}`;
+        broadcastLog(tab, 'TX', `${tab.connection.role} Connect (${tab.connection.protocol})`, targetStr);
+        const msg = await ModbusService.connect(
+          tab.id,
+          tab.connection,
+          tab.config.unitId,
+          tab.title,
+        );
+        tab.connected = true;
+        tab.statusMessage = `[${tab.title}] ${msg}`;
+        tab.statusType = 'success';
+        broadcastLog(tab, 'RX', `${tab.connection.role} Connected OK`, `Status: Active`, false, operationStarted);
+      } catch (err: any) {
+        logFailure(tab, 'Connect', err, operationStarted);
+        tab.statusMessage = `[${tab.title}] Connection failed: ${err?.message || err}`;
+        tab.statusType = 'error';
+      }
     }
-  } else {
-    try {
-      broadcastLog(activeTab.value, 'TX', `${activeTab.value.connection.role} Connect (${activeTab.value.connection.protocol})`, `${activeTab.value.connection.ip}:${activeTab.value.connection.port}`);
-      const msg = await ModbusService.connect(activeTab.value.id, activeTab.value.connection);
-      activeTab.value.connected = true;
-      activeTab.value.statusMessage = `[${activeTab.value.title}] ${msg}`;
-      activeTab.value.statusType = 'success';
-      broadcastLog(activeTab.value, 'RX', `${activeTab.value.connection.role} Connected OK`, `Status: Active`);
-    } catch (err: any) {
-      activeTab.value.statusMessage = `[${activeTab.value.title}] Connection failed: ${err?.message || err}`;
-      activeTab.value.statusType = 'error';
-    }
+  } finally {
+    tab.busy = false;
   }
 }
 
 async function handleFillRandom() {
-  if (!activeTab.value) return;
+  const operationStarted = Date.now();
+  const tab = activeTab.value;
+  if (!tab || !tab.connected || tab.busy) return;
+  const isCurrent = captureTabRequest(tab);
   try {
-    broadcastLog(activeTab.value, 'TX', `Random Fill Req`, `Start: ${activeTab.value.config.startAddress}, Count: ${activeTab.value.config.count}`);
+    broadcastLog(tab, 'TX', `Random Fill Req`, `Start: ${tab.config.startAddress}, Count: ${tab.config.count}`);
     const updated = generateRandomRegisters(
-      activeTab.value.config.startAddress,
-      activeTab.value.config.count,
-      activeTab.value.config.dataType,
-      activeTab.value.config.byteOrder,
-      activeTab.value.config.functionCode
+      tab.config.startAddress,
+      tab.config.count,
+      tab.config.dataType,
+      tab.config.byteOrder,
+      tab.config.functionCode
     );
-    activeTab.value.values = { ...activeTab.value.values, ...updated };
+    const confirmed: Record<number, number> = {};
     for (const [addrStr, val] of Object.entries(updated)) {
-      await ModbusService.writeRegister(activeTab.value.id, Number(addrStr), val).catch(() => {});
+      if (!isCurrent()) return;
+      const address = Number(addrStr);
+      await writeTabRegister(tab, address, val);
+      if (!isCurrent()) return;
+      confirmed[address] = val;
+      tab.values[address] = val;
+      tab.valueVersion = (tab.valueVersion ?? 0) + 1;
     }
-    broadcastLog(activeTab.value, 'RX', `Random Fill Resp OK`, `Updated ${activeTab.value.config.count} registers`);
+    tab.values = { ...tab.values, ...confirmed };
+    tab.statusMessage = `[${tab.title}] Random fill OK.`;
+    tab.statusType = 'success';
+    broadcastLog(tab, 'RX', `Random Fill Resp OK`, `Updated ${tab.config.count} registers`, false, operationStarted);
   } catch (err) {
+    if (!isCurrent()) return;
     console.error('Failed fill random:', err);
+    logFailure(tab, 'Random fill', err, operationStarted);
+    tab.statusMessage = `[${tab.title}] Random fill failed: ${err instanceof Error ? err.message : err}`;
+    tab.statusType = 'error';
   }
 }
 
 function handleToggleAutoIncrement() {
-  if (!activeTab.value) return;
+  if (!activeTab.value || !activeTab.value.connected || activeTab.value.busy) return;
   activeTab.value.autoIncrement = !activeTab.value.autoIncrement;
 }
 
 function handleTogglePoll() {
-  if (!activeTab.value) return;
+  if (!activeTab.value || !activeTab.value.connected || activeTab.value.busy) return;
   activeTab.value.isPolling = !activeTab.value.isPolling;
 }
 
 async function handleReadOnce() {
-  if (!activeTab.value || !activeTab.value.connected) return;
-  const unit = activeTab.value.config.unitId.toString(16).padStart(2, '0');
-  const start = activeTab.value.config.startAddress.toString(16).padStart(4, '0');
-  const count = activeTab.value.config.count.toString(16).padStart(4, '0');
-
-  const txBytes = `${unit} 03 ${start.slice(0, 2)} ${start.slice(2)} ${count.slice(0, 2)} ${count.slice(2)} C5 D3`;
-  broadcastLog(activeTab.value, 'TX', `Read (${activeTab.value.config.functionCode}) Req`, txBytes);
+  const operationStarted = Date.now();
+  const tab = activeTab.value;
+  if (!tab || !tab.connected || tab.busy) return;
+  const isCurrent = captureTabRequest(tab);
+  broadcastLog(tab, 'TX', `Read (${tab.config.functionCode}) Req`, `Unit: ${tab.config.unitId}, Start: ${tab.config.startAddress}, Count: ${tab.config.count}`);
 
   try {
-    const fetched = await ModbusService.readRegisters(
-      activeTab.value.id,
-      activeTab.value.config.startAddress,
-      activeTab.value.config.count
-    );
+    const fetched = await readTabRegisters(tab);
+    if (!isCurrent()) return;
     if (Object.keys(fetched).length > 0) {
-      activeTab.value.values = { ...activeTab.value.values, ...fetched };
+      tab.values = { ...tab.values, ...fetched };
     }
+    tab.statusMessage = `[${tab.title}] Read OK (${Object.keys(fetched).length} values).`;
+    tab.statusType = 'success';
+    broadcastLog(tab, 'RX', `Read (${tab.config.functionCode}) Resp`, `Unit: ${tab.config.unitId}, Start: ${tab.config.startAddress}, Count: ${Object.keys(fetched).length}`, false, operationStarted);
   } catch (err) {
+    if (!isCurrent()) return;
     console.error('Read failed:', err);
+    tab.statusMessage = `[${tab.title}] Read failed: ${err instanceof Error ? err.message : err}`;
+    tab.statusType = 'error';
+    broadcastLog(tab, 'RX', `Read (${tab.config.functionCode}) Failed`, String(err), false, operationStarted);
   }
-
-  const rxBytes = `${unit} 03 50 ${Array.from({ length: 8 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join(' ')} ...`;
-  broadcastLog(activeTab.value, 'RX', `Read (${activeTab.value.config.functionCode}) Resp`, rxBytes);
 }
 
 async function handleUpdateCell(address: number, value: number) {
-  if (!activeTab.value) return;
-  activeTab.value.values[address] = value;
-  broadcastLog(activeTab.value, 'TX', `Write Register (Addr: ${address})`, `Val: ${value}`);
+  const operationStarted = Date.now();
+  const tab = activeTab.value;
+  if (!tab || !tab.connected || tab.busy || (tab.connection.role === 'Master' && ['0x02', '0x04'].includes(tab.config.functionCode))) return;
+  const isCurrent = captureTabRequest(tab);
+  broadcastLog(tab, 'TX', `Write Register (Addr: ${address})`, `Val: ${value}`);
   try {
-    await ModbusService.writeRegister(activeTab.value.id, address, value);
-    broadcastLog(activeTab.value, 'RX', `Write Register Resp OK`, `Addr: ${address}`);
+    await writeTabRegister(tab, address, value);
+    if (!isCurrent()) return;
+    tab.values[address] = value;
+    tab.valueVersion = (tab.valueVersion ?? 0) + 1;
+    tab.statusMessage = `[${tab.title}] Write OK (${address}).`;
+    tab.statusType = 'success';
+    broadcastLog(tab, 'RX', `Write Register Resp OK`, `Unit: ${tab.config.unitId}, Addr: ${address}, Value: ${value}`, false, operationStarted);
   } catch (err: any) {
+    if (!isCurrent()) return;
     console.error('Failed to write register:', err);
+    logFailure(tab, 'Write', err, operationStarted);
+    tab.statusMessage = `[${tab.title}] Write failed: ${err?.message || err}`;
+    tab.statusType = 'error';
   }
 }
 
 async function handleUpdateCellPair(address1: number, value1: number, address2: number, value2: number) {
-  if (!activeTab.value) return;
-  activeTab.value.values[address1] = value1;
-  activeTab.value.values[address2] = value2;
-  broadcastLog(activeTab.value, 'TX', `Write Register Pair (Addr: ${address1}-${address2})`, `Word1: ${value1}, Word2: ${value2}`);
+  const operationStarted = Date.now();
+  const tab = activeTab.value;
+  if (!tab || !tab.connected || tab.busy || (tab.connection.role === 'Master' && ['0x02', '0x04'].includes(tab.config.functionCode))) return;
+  const isCurrent = captureTabRequest(tab);
+  broadcastLog(tab, 'TX', `Write Register Pair (Addr: ${address1}-${address2})`, `Word1: ${value1}, Word2: ${value2}`);
   try {
-    await ModbusService.writeRegister(activeTab.value.id, address1, value1);
-    await ModbusService.writeRegister(activeTab.value.id, address2, value2);
-    broadcastLog(activeTab.value, 'RX', `Write Register Pair Resp OK`, `Addr: ${address1}-${address2}`);
+    await ModbusService.writeRegisters(
+      tab.id,
+      address1,
+      [value1, value2],
+      tab.config.functionCode,
+      tab.config.unitId,
+      tab.connection.timeoutMs,
+      tab.connection.retries
+    );
+    if (!isCurrent()) return;
+    tab.values[address1] = value1;
+    tab.values[address2] = value2;
+    tab.valueVersion = (tab.valueVersion ?? 0) + 1;
+    tab.statusMessage = `[${tab.title}] Write OK (${address1}-${address2}).`;
+    tab.statusType = 'success';
+    broadcastLog(tab, 'RX', `Write Register Pair Resp OK`, `Unit: ${tab.config.unitId}, Addr: ${address1}-${address2}, Values: ${value1}, ${value2}`, false, operationStarted);
   } catch (err: any) {
+    if (!isCurrent()) return;
     console.error('Failed to write register pair:', err);
+    logFailure(tab, 'Write', err, operationStarted);
+    tab.statusMessage = `[${tab.title}] Write failed: ${err?.message || err}`;
+    tab.statusType = 'error';
   }
 }
 
 function handleSaveSettings(newConnection: ConnectionConfig) {
-  if (!activeTab.value) return;
+  if (!activeTab.value || activeTab.value.connected || activeTab.value.busy) return;
   activeTab.value.connection = newConnection;
 }
 
@@ -534,11 +764,7 @@ function handleSaveSettings(newConnection: ConnectionConfig) {
 </script>
 
 <template>
-  <div v-if="isTrafficLogRoute" class="h-screen w-screen">
-    <TrafficLogWindow />
-  </div>
-
-  <div v-else class="h-screen w-screen flex flex-col bg-gray-100 font-sans select-none overflow-hidden">
+  <div class="h-screen w-screen flex flex-col bg-gray-100 font-sans select-none overflow-hidden">
     <TabBar
       :tabs="tabs"
       :activeTabId="activeTabId"
@@ -550,11 +776,15 @@ function handleSaveSettings(newConnection: ConnectionConfig) {
 
     <Toolbar
       v-if="activeTab"
+      :session-id="activeTab.id"
       :role="activeTab.connection.role"
       :protocol="activeTab.connection.protocol"
       :ip="activeTab.connection.ip"
       :port="activeTab.connection.port"
+      :serialPort="activeTab.connection.serialPort"
+      :baudRate="activeTab.connection.baudRate"
       :connected="activeTab.connected"
+      :loading="activeTab.busy"
       :functionCode="activeTab.config.functionCode"
       :autoIncrement="activeTab.autoIncrement"
       :isPolling="activeTab.isPolling"
@@ -570,11 +800,14 @@ function handleSaveSettings(newConnection: ConnectionConfig) {
       v-if="activeTab"
       v-model:config="activeTab.config"
       :connected="activeTab.connected"
+      :busy="activeTab.busy"
       :role="activeTab.connection.role"
     />
 
     <DataGrid
       v-if="activeTab"
+      :key="activeTab.id"
+      :writable="activeTab.connected && !activeTab.busy && (activeTab.connection.role === 'Slave' || !['0x02', '0x04'].includes(activeTab.config.functionCode))"
       :startAddress="activeTab.config.startAddress"
       :count="activeTab.config.count"
       :values="activeTab.values"
@@ -590,8 +823,8 @@ function handleSaveSettings(newConnection: ConnectionConfig) {
     <TrafficLog
       v-if="activeTab && showLogPanel"
       :logs="allLogs"
-      :deviceNames="existingNames"
-      @clear="activeTab ? (activeTab.logs = []) : null"
+      :devices="tabs.map(tab => ({ id: tab.id, title: tab.title }))"
+      @clear="device => tabs.forEach(tab => { if (!device || tab.id === device) tab.logs = []; })"
       @close="showLogPanel = false"
     />
 
@@ -601,7 +834,9 @@ function handleSaveSettings(newConnection: ConnectionConfig) {
       :type="activeTab.statusType"
       :logCount="allLogs.length"
       :showLogPanel="showLogPanel"
+      :language="language"
       @toggle-logs="showLogPanel = !showLogPanel"
+      @toggle-language="toggleLanguage"
     />
 
     <SettingsModal
@@ -621,8 +856,8 @@ function handleSaveSettings(newConnection: ConnectionConfig) {
 
     <ConfirmModal
       :show="showConfirmModal"
-      title="Close Active Connection"
-      message="This session is currently connected to a device. Are you sure you want to disconnect and close it?"
+      :title="$t('modal.closeConnection')"
+      :message="$t('modal.closeConnectionMsg')"
       @close="showConfirmModal = false"
       @confirm="handleConfirmCloseTab"
     />

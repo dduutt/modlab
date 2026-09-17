@@ -30,8 +30,8 @@ const emit = defineEmits<{
       </div>
 
       <div class="flex items-center justify-end gap-2 px-5 py-3.5 bg-gray-50/80 border-t border-gray-100">
-        <button @click="emit('close')" class="px-4 py-1.5 rounded-xl text-gray-600 hover:bg-gray-200/60 font-medium transition text-sm cursor-pointer">Cancel</button>
-        <button @click="emit('confirm')" class="px-5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium shadow-md transition text-sm cursor-pointer">Confirm Close</button>
+        <button @click="emit('close')" class="px-4 py-1.5 rounded-xl text-gray-600 hover:bg-gray-200/60 font-medium transition text-sm cursor-pointer">{{ $t('common.cancel') }}</button>
+        <button @click="emit('confirm')" class="px-5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium shadow-md transition text-sm cursor-pointer">{{ $t('common.confirm') }}</button>
       </div>
     </div>
   </div>

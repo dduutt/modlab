@@ -35,6 +35,15 @@ pub struct ConnectionConfig {
     pub retries: u8,
 }
 
+impl ConnectionConfig {
+    pub fn serial_settings_match(&self, other: &Self) -> bool {
+        self.baud_rate == other.baud_rate
+            && self.data_bits == other.data_bits
+            && self.stop_bits == other.stop_bits
+            && self.parity == other.parity
+    }
+}
+
 fn default_timeout_ms() -> u32 {
     1000
 }
