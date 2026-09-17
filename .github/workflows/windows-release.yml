@@ -2,7 +2,7 @@ name: Windows release
 
 on:
   push:
-    branches: [master, main]
+    tags: ['v[0-9]*']
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,6 @@ concurrency:
 
 jobs:
   windows:
-    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
     runs-on: windows-2022
     timeout-minutes: 60
     defaults:
@@ -27,6 +26,14 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+
+      - name: Validate release tag
+        if: github.ref_type == 'tag'
+        run: |
+          $config = Get-Content -LiteralPath src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if ($env:GITHUB_REF_NAME -ne "v$($config.version)") {
+            throw "Tag $env:GITHUB_REF_NAME must match application version v$($config.version)."
+          }
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -66,9 +73,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $config = Get-Content -LiteralPath src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
           $version = $config.version
-          $tag = "windows-v$version-$env:GITHUB_RUN_NUMBER.$env:GITHUB_RUN_ATTEMPT"
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tag = $env:GITHUB_REF_NAME
+            $title = "Modlab $version"
+          } else {
+            $tag = "windows-v$version-$env:GITHUB_RUN_NUMBER.$env:GITHUB_RUN_ATTEMPT"
+            $title = "Modlab $version - Windows build $env:GITHUB_RUN_NUMBER.$env:GITHUB_RUN_ATTEMPT"
+          }
           "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
-          "RELEASE_TITLE=Modlab $version - Windows build $env:GITHUB_RUN_NUMBER.$env:GITHUB_RUN_ATTEMPT" >> $env:GITHUB_ENV
+          "RELEASE_TITLE=$title" >> $env:GITHUB_ENV
           New-Item -ItemType Directory -Path release-assets | Out-Null
           $output = 'src-tauri/target/x86_64-pc-windows-msvc/release'
           Copy-Item -LiteralPath "$output/modlab.exe" -Destination release-assets/Modlab-windows-x64.exe
