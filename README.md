@@ -2,6 +2,15 @@
 
 Modbus 桌面调试工具，支持 **TCP / RTU 主站通信与从站模拟**，可通过多个标签页同时管理设备。
 
+## 下载
+
+前往 [Releases](https://github.com/dduutt/modlab/releases/latest) 下载 Windows x64 版本：
+
+- **Modlab-windows-x64-setup.exe**：安装版，推荐使用。
+- **Modlab-windows-x64.exe**：直接运行版，需要系统已安装 WebView2 Runtime。
+
+推送到 `master` / `main` 后会自动测试、编译并发布新版本，也可在 Actions 中手动运行 **Windows release**。
+
 ## 主要功能
 
 - **主站**：单次读取、定时轮询、线圈与保持寄存器写入。
