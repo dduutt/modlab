@@ -113,7 +113,7 @@ function handleCellRightClick(addr: number) {
 </script>
 
 <template>
-  <div class="flex-1 p-4 overflow-auto bg-gray-50/50 relative" @contextmenu.prevent>
+  <div class="flex-1 p-4 overflow-auto bg-gray-50/50 relative">
     <div class="bg-white border border-gray-200 rounded-xl shadow-2xs overflow-hidden">
       <Table class="w-full text-sm text-center border-collapse">
         <TableHeader>
