@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
-import { X, CheckCircle2, AlertCircle, Loader2, Download } from '@lucide/vue';
+import { X, CheckCircle2, AlertCircle, Loader2 } from '@lucide/vue';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { UpdateService } from '../services/updateService';
@@ -23,7 +23,6 @@ const emit = defineEmits<{
 }>();
 
 const isPortable = ref(false);
-const PORTABLE_DOWNLOAD_URL = 'https://update.dduu.cloud/dduutt/modlab/download/Modlab-windows-x64.exe';
 
 const checking = ref(false);
 const checked = ref(false);
@@ -77,7 +76,29 @@ async function handleCheckUpdate() {
   }
 }
 
+function getPortableDownloadUrl(): string {
+  const version = updateInfo.value?.version || props.currentVersion || '0.1.2';
+  const tag = version.startsWith('v') ? version : `v${version}`;
+  return `https://update.dduu.cloud/dduutt/modlab/download/${tag}/Modlab-windows-x64.exe`;
+}
+
+async function handleDownloadPortable() {
+  try {
+    const url = getPortableDownloadUrl();
+    await openUrl(url);
+  } catch (err: any) {
+    console.error('Failed to open download URL:', err);
+    updateError.value = err?.message || 'Failed to open browser';
+  }
+}
+
 async function handleApplyUpdate() {
+  if (isPortable.value) {
+    await handleDownloadPortable();
+    emit('close');
+    return;
+  }
+
   if (downloading.value || restarting.value) return;
   downloading.value = true;
   updateError.value = null;
@@ -90,15 +111,6 @@ async function handleApplyUpdate() {
   } catch (err: any) {
     downloading.value = false;
     updateError.value = err?.message || 'Update installation failed';
-  }
-}
-
-async function handleDownloadPortable() {
-  try {
-    await openUrl(PORTABLE_DOWNLOAD_URL);
-  } catch (err: any) {
-    console.error('Failed to open download URL:', err);
-    updateError.value = err?.message || 'Failed to open browser';
   }
 }
 </script>
@@ -124,15 +136,10 @@ async function handleDownloadPortable() {
           <div class="flex items-center justify-between">
             <div>
               <span class="block text-xs font-semibold text-gray-500 mb-0.5">{{ $t('updater.currentVersion') }}</span>
-              <div class="flex items-center gap-1.5">
-                <span class="font-mono text-sm font-semibold text-gray-800">v{{ currentVersion }}</span>
-                <span
-                  v-if="isPortable"
-                  class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600 border border-gray-200"
-                >
-                  {{ $t('updater.portable') }}
-                </span>
-              </div>
+              <span class="font-mono text-sm font-semibold text-gray-800">
+                v{{ currentVersion }}
+                <span v-if="isPortable" class="font-sans font-normal text-xs text-gray-500 ml-1">({{ $t('updater.portable') }})</span>
+              </span>
             </div>
 
             <!-- Status Badge -->
@@ -157,11 +164,6 @@ async function handleDownloadPortable() {
             <AlertCircle class="w-3.5 h-3.5 shrink-0" />
             <span class="truncate" :title="updateError">{{ $t('updater.failed') }}</span>
           </div>
-        </div>
-
-        <!-- Portable Notice -->
-        <div v-if="updateInfo?.available && isPortable" class="bg-amber-50/80 border border-amber-200/70 rounded-xl p-3 text-xs text-amber-800 leading-relaxed">
-          {{ $t('updater.portableHint') }}
         </div>
 
         <!-- Release Notes (when new version is available) -->
@@ -193,30 +195,16 @@ async function handleDownloadPortable() {
           {{ $t('common.cancel') }}
         </button>
 
-        <template v-if="updateInfo?.available">
-          <!-- Portable edition: open browser download -->
-          <button
-            v-if="isPortable"
-            type="button"
-            @click="handleDownloadPortable"
-            class="px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-md transition text-sm cursor-pointer flex items-center gap-1.5"
-          >
-            <Download class="w-3.5 h-3.5" />
-            <span>{{ $t('updater.downloadPortable') }}</span>
-          </button>
-
-          <!-- Installed edition: auto download & restart -->
-          <button
-            v-else
-            type="button"
-            @click="handleApplyUpdate"
-            :disabled="downloading || restarting"
-            class="px-5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-md transition text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-          >
-            <Loader2 v-if="downloading" class="w-3.5 h-3.5 animate-spin" />
-            <span>{{ restarting ? $t('updater.restarting') : downloading ? `${$t('updater.downloading')} ${progressPercent}%` : $t('updater.updateNow') }}</span>
-          </button>
-        </template>
+        <button
+          v-if="updateInfo?.available"
+          type="button"
+          @click="handleApplyUpdate"
+          :disabled="downloading || restarting"
+          class="px-5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-md transition text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+        >
+          <Loader2 v-if="downloading" class="w-3.5 h-3.5 animate-spin" />
+          <span>{{ restarting ? $t('updater.restarting') : downloading ? `${$t('updater.downloading')} ${progressPercent}%` : $t('updater.updateNow') }}</span>
+        </button>
 
         <button
           v-else

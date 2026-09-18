@@ -92,10 +92,29 @@ jobs:
           if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)." }
           Copy-Item -LiteralPath $installers[0].FullName -Destination release-assets/Modlab-windows-x64-setup.exe
 
-          # Copy updater artifacts (zip, sig, latest.json)
-          $updaterArtifacts = @(Get-ChildItem -Path "$output", "$output/bundle/nsis" -Include '*.zip', '*.sig', 'latest.json' -Recurse -File -ErrorAction SilentlyContinue)
+          # Copy updater artifacts (zip, sig)
+          $updaterArtifacts = @(Get-ChildItem -Path "$output", "$output/bundle/nsis" -Include '*.zip', '*.sig' -Recurse -File -ErrorAction SilentlyContinue)
           foreach ($artifact in $updaterArtifacts) {
             Copy-Item -LiteralPath $artifact.FullName -Destination release-assets/ -Force
+          }
+
+          # Generate latest.json manifest for Tauri v2 updater
+          $sigFile = Get-ChildItem -LiteralPath "$output/bundle/nsis" -Filter '*.sig' -File | Select-Object -First 1
+          if ($sigFile) {
+            $sigContent = (Get-Content -LiteralPath $sigFile.FullName -Raw).Trim()
+            $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            $manifest = @{
+              version = $version
+              notes = "Modlab v$version"
+              pub_date = $pubDate
+              platforms = @{
+                "windows-x86_64" = @{
+                  signature = $sigContent
+                  url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/Modlab-windows-x64-setup.exe"
+                }
+              }
+            } | ConvertTo-Json -Depth 5
+            Set-Content -LiteralPath release-assets/latest.json -Value $manifest -Encoding utf8
           }
 
           Get-ChildItem -LiteralPath release-assets -Filter '*.exe' | ForEach-Object {
