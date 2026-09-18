@@ -35,7 +35,7 @@ export default {
   },
   modal: {
     addDevice: '添加设备',
-    createDevice: '创建设备',
+    createDevice: '创建',
     deviceName: '名称',
     nameRequired: '请输入设备名称。',
     deviceType: '角色',

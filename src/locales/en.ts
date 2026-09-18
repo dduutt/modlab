@@ -35,7 +35,7 @@ export default {
   },
   modal: {
     addDevice: 'Add Device',
-    createDevice: 'Create Device',
+    createDevice: 'Create',
     deviceName: 'Name',
     nameRequired: 'Device name is required.',
     deviceType: 'Role',
