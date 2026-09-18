@@ -107,7 +107,7 @@ function getDefaultTabs(): SessionTab[] {
   return [
     {
       id: 'slave-1',
-      title: 'Slave 2',
+      title: 'Slave 1',
       connection: {
         role: 'Slave',
         protocol: 'TCP',
@@ -135,7 +135,7 @@ function getDefaultTabs(): SessionTab[] {
       },
       values: {},
       logs: [],
-      statusMessage: '[Slave 2] Disconnected.',
+      statusMessage: '[Slave 1] Disconnected.',
       statusType: 'info',
     },
   ];
@@ -534,7 +534,7 @@ function handleCreateDevice(name: string, role: 'Slave' | 'Master') {
       role,
       protocol: 'TCP',
       ip: role === 'Master' ? '127.0.0.1' : '0.0.0.0',
-      port: 502 + count - 1,
+      port: 502,
       serialPort: `COM${count}`,
       baudRate: 9600,
       dataBits: 8,
@@ -545,7 +545,7 @@ function handleCreateDevice(name: string, role: 'Slave' | 'Master') {
     },
     connected: false,
     config: {
-      unitId: count,
+      unitId: 1,
       functionCode: '0x03',
       startAddress: 0,
       count: 40,
