@@ -6,6 +6,8 @@ interface Tab {
   title: string;
   connected?: boolean;
   busy?: boolean;
+  statusType?: 'error' | 'success' | 'info';
+  statusMessage?: string;
   connection?: {
     role?: 'Slave' | 'Master';
     protocol?: string;
@@ -27,6 +29,23 @@ function getTabRoleShort(tab: Tab): 'S' | 'M' {
   const role = tab.connection?.role || (tab.title.toLowerCase().includes('master') ? 'Master' : 'Slave');
   return role === 'Master' ? 'M' : 'S';
 }
+
+function getTabStatusColorClass(tab: Tab): string {
+  if (tab.statusType === 'error') {
+    return 'text-red-500';
+  }
+  if (tab.connected) {
+    return 'text-emerald-600';
+  }
+  return tab.id === props.activeTabId
+    ? 'text-gray-700'
+    : 'text-gray-400 group-hover:text-gray-500';
+}
+
+function getTabRoleTooltip(tab: Tab): string {
+  const role = getTabRoleShort(tab) === 'M' ? 'Master' : 'Slave';
+  return tab.statusMessage ? `${role} · ${tab.statusMessage}` : role;
+}
 </script>
 
 <template>
@@ -43,17 +62,13 @@ function getTabRoleShort(tab: Tab): 'S' | 'M' {
           : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100 hover:text-gray-700'
       ]"
     >
-      <!-- S / M Role Indicator: Pure mono character, color represents connection status -->
+      <!-- S / M Role Indicator: Pure mono character, color dynamically tracks latest status -->
       <span
         :class="[
           'font-mono text-sm font-bold shrink-0 transition-colors leading-none',
-          tab.connected
-            ? 'text-emerald-600'
-            : tab.id === activeTabId
-              ? 'text-gray-700'
-              : 'text-gray-400 group-hover:text-gray-500'
+          getTabStatusColorClass(tab)
         ]"
-        :title="getTabRoleShort(tab) === 'M' ? 'Master' : 'Slave'"
+        :title="getTabRoleTooltip(tab)"
       >
         {{ getTabRoleShort(tab) }}
       </span>
