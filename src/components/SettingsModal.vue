@@ -21,14 +21,20 @@ export interface ConnectionConfig {
 const props = defineProps<{
   show: boolean;
   config: ConnectionConfig;
+  mode?: 'create' | 'edit';
+  existingNames?: string[];
+  deviceName?: string;
 }>();
 
 const emit = defineEmits<{
   (e: 'close'): void;
-  (e: 'save', newConfig: ConnectionConfig): void;
+  (e: 'save', newConfig: ConnectionConfig, deviceName?: string): void;
+  (e: 'create', deviceName: string, config: ConnectionConfig): void;
 }>();
 
 const form = ref<ConnectionConfig>({ ...props.config });
+const deviceName = ref<string>(props.deviceName || 'Device');
+const userHasEdited = ref<boolean>(false);
 const serialPorts = ref<string[]>([]);
 const portsLoading = ref(false);
 const portsRefreshing = ref(false);
@@ -36,6 +42,35 @@ const portsError = ref('');
 let portRequestId = 0;
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 const SERIAL_REFRESH_INTERVAL_MS = 1000;
+
+function getSuggestedName(selectedRole: 'Slave' | 'Master'): string {
+  const prefix = selectedRole;
+  const names = props.existingNames || [];
+  let index = 1;
+  while (names.some(n => n.toLowerCase() === `${prefix.toLowerCase()} ${index}`)) {
+    index++;
+  }
+  return `${prefix} ${index}`;
+}
+
+function selectRole(newRole: 'Slave' | 'Master') {
+  if (props.mode === 'edit') return;
+  form.value.role = newRole;
+  if (!userHasEdited.value) {
+    deviceName.value = getSuggestedName(newRole);
+  }
+  if (form.value.protocol === 'TCP') {
+    if (newRole === 'Master' && form.value.ip === '0.0.0.0') {
+      form.value.ip = '127.0.0.1';
+    } else if (newRole === 'Slave' && form.value.ip === '127.0.0.1') {
+      form.value.ip = '0.0.0.0';
+    }
+  }
+}
+
+function handleNameInput() {
+  userHasEdited.value = true;
+}
 
 function stopSerialRefresh() {
   ++portRequestId;
@@ -45,10 +80,32 @@ function stopSerialRefresh() {
   portsRefreshing.value = false;
 }
 
+const isDuplicateName = computed(() => {
+  const trimmed = deviceName.value.trim().toLowerCase();
+  if (!trimmed) return false;
+  const names = props.existingNames || [];
+  if (props.mode === 'create') {
+    return names.some(n => n.toLowerCase() === trimmed);
+  }
+  const current = (props.deviceName || '').toLowerCase();
+  return names.some(n => n.toLowerCase() === trimmed && n.toLowerCase() !== current);
+});
+
+const nameValidationError = computed(() => {
+  const trimmed = deviceName.value.trim();
+  if (!trimmed) return 'modal.nameRequired';
+  if (isDuplicateName.value) return 'modal.duplicateName';
+  return '';
+});
+
 const validationError = computed(() => connectionError(form.value));
-const canSave = computed(() => !validationError.value && (form.value.protocol !== 'RTU' || (
-  !portsLoading.value && !portsError.value && serialPorts.value.includes(form.value.serialPort)
-)));
+const canSave = computed(() =>
+  !nameValidationError.value &&
+  !validationError.value &&
+  (form.value.protocol !== 'RTU' || (
+    !portsLoading.value && !portsError.value && serialPorts.value.includes(form.value.serialPort)
+  ))
+);
 
 async function refreshSerialPorts(background = false) {
   if (!props.show || form.value.protocol !== 'RTU' || portsRefreshing.value) return;
@@ -91,7 +148,20 @@ async function refreshSerialPorts(background = false) {
 watch(
   [() => props.show, () => props.config],
   ([show, config]) => {
-    if (show) form.value = { ...config };
+    if (show) {
+      form.value = { ...config };
+      userHasEdited.value = false;
+      if (props.mode === 'create') {
+        form.value.role = form.value.role || 'Slave';
+        form.value.port = form.value.port || 502;
+        if (form.value.protocol === 'TCP') {
+          form.value.ip = form.value.role === 'Master' ? '127.0.0.1' : '0.0.0.0';
+        }
+        deviceName.value = getSuggestedName(form.value.role);
+      } else {
+        deviceName.value = props.deviceName || 'Device';
+      }
+    }
   },
   { deep: true, immediate: true }
 );
@@ -109,25 +179,85 @@ watch(
 
 onUnmounted(stopSerialRefresh);
 
-
 function handleSave() {
   if (!canSave.value) return;
-  emit('save', { ...form.value, ip: form.value.ip.trim() });
+  const name = deviceName.value.trim() || (props.mode === 'create' ? getSuggestedName(form.value.role) : (props.deviceName || 'Device'));
+  const config = { ...form.value, ip: form.value.ip.trim() };
+  emit('save', config, name);
+  if (props.mode === 'create') {
+    emit('create', name, config);
+  }
   emit('close');
 }
 </script>
 
 <template>
   <div v-if="show" class="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4 select-none">
-    <div role="dialog" aria-modal="true" :aria-label="$t('modal.connectionSettings')" class="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-md h-[520px] max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div
+      role="dialog"
+      aria-modal="true"
+      :aria-label="mode === 'create' ? $t('modal.addDevice') : $t('modal.connectionSettings')"
+      class="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-md max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+    >
+      <!-- Modal Header -->
       <div class="flex shrink-0 items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50/50">
-        <h3 class="font-semibold text-gray-900 text-base">{{ $t('modal.connectionSettings') }}</h3>
+        <h3 class="font-semibold text-gray-900 text-base">
+          {{ mode === 'create' ? $t('modal.addDevice') : $t('modal.connectionSettings') }}
+        </h3>
         <button @click="emit('close')" class="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-200/60 rounded-lg transition cursor-pointer">
           <X class="w-4 h-4" />
         </button>
       </div>
 
+      <!-- Modal Body -->
       <div class="flex-1 p-5 space-y-4 text-sm min-h-0 overflow-y-auto">
+        <!-- Device Name & Role -->
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-gray-500 mb-1.5">{{ $t('modal.deviceName') }}</label>
+            <input
+              v-model="deviceName"
+              @input="handleNameInput"
+              type="text"
+              :placeholder="$t('modal.e_g_slave2')"
+              class="w-full h-9 px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 bg-white font-medium text-sm"
+            />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-gray-500 mb-1.5">{{ $t('modal.deviceType') }}</label>
+            <div class="grid grid-cols-2 gap-1 bg-gray-100 p-1 rounded-lg h-9">
+              <button
+                type="button"
+                @click="selectRole('Slave')"
+                :disabled="mode === 'edit'"
+                :class="[
+                  'flex items-center justify-center rounded-md font-medium text-xs transition',
+                  form.role === 'Slave' ? 'bg-white text-blue-600 shadow-2xs' : 'text-gray-600 hover:text-gray-900',
+                  mode === 'edit' ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+                ]"
+              >
+                {{ $t('modal.slave') }}
+              </button>
+              <button
+                type="button"
+                @click="selectRole('Master')"
+                :disabled="mode === 'edit'"
+                :class="[
+                  'flex items-center justify-center rounded-md font-medium text-xs transition',
+                  form.role === 'Master' ? 'bg-white text-blue-600 shadow-2xs' : 'text-gray-600 hover:text-gray-900',
+                  mode === 'edit' ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+                ]"
+              >
+                {{ $t('modal.master') }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <p v-if="nameValidationError" role="alert" class="text-xs text-red-600 -mt-2">
+          {{ $t(nameValidationError) }}
+        </p>
+
         <!-- Protocol -->
         <div>
           <label class="block text-xs font-semibold text-gray-500 mb-1.5">{{ $t('modal.protocolType') }}</label>
@@ -150,7 +280,7 @@ function handleSave() {
         </div>
 
         <!-- TCP Options -->
-        <div v-if="form.protocol === 'TCP'" class="grid grid-cols-3 content-start min-h-[172px] gap-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
+        <div v-if="form.protocol === 'TCP'" class="grid grid-cols-3 content-start gap-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
           <div class="col-span-2">
             <label class="block text-xs font-semibold text-gray-500 mb-1">{{ $t('modal.ipAddress') }}</label>
             <input v-model="form.ip" type="text" class="w-full h-9 px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 bg-white font-mono text-sm" />
@@ -161,8 +291,8 @@ function handleSave() {
           </div>
         </div>
 
-        <!-- RTU Options -->
-        <div v-else class="grid grid-cols-3 content-start min-h-[172px] gap-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
+        <!-- RTU Core Options -->
+        <div v-else class="grid grid-cols-3 content-start gap-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
           <div class="col-span-2 min-w-0">
             <label class="block text-xs font-semibold text-gray-500 mb-1">{{ $t('modal.serialPort') }}</label>
             <select v-model="form.serialPort" :disabled="portsLoading || serialPorts.length === 0" class="w-full h-9 min-w-0 px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 bg-white font-mono text-sm cursor-pointer disabled:opacity-60">
@@ -181,6 +311,15 @@ function handleSave() {
               <option :value="115200">115200</option>
             </select>
           </div>
+        </div>
+
+        <!-- Advanced Parameters Header -->
+        <div class="pt-1 border-t border-gray-100 flex items-center justify-between">
+          <span class="text-xs font-semibold text-gray-500">{{ $t('modal.advancedSettings') }}</span>
+        </div>
+
+        <!-- RTU Advanced Options (Data Bits, Stop Bits, Parity) -->
+        <div v-if="form.protocol === 'RTU'" class="grid grid-cols-3 gap-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
           <div>
             <label class="block text-xs font-semibold text-gray-500 mb-1">{{ $t('modal.dataBits') }}</label>
             <select v-model.number="form.dataBits" class="w-full h-9 px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 bg-white font-mono text-sm">
@@ -218,10 +357,15 @@ function handleSave() {
         </div>
       </div>
 
-      <p v-if="validationError" role="alert" class="px-5 pb-3 text-xs text-red-600">{{ $t(validationError) }}</p>
+      <!-- Validation Error -->
+      <p v-if="validationError" role="alert" class="px-5 pb-2 text-xs text-red-600">{{ $t(validationError) }}</p>
+
+      <!-- Footer Buttons -->
       <div class="flex shrink-0 items-center justify-end gap-2 px-5 py-3.5 bg-gray-50/80 border-t border-gray-100">
         <button @click="emit('close')" class="px-4 py-1.5 rounded-xl text-gray-600 hover:bg-gray-200/60 font-medium transition text-sm cursor-pointer">{{ $t('common.cancel') }}</button>
-        <button @click="handleSave" :disabled="!canSave" class="px-5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-md transition text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">{{ $t('common.save') }}</button>
+        <button @click="handleSave" :disabled="!canSave" class="px-5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-md transition text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+          {{ mode === 'create' ? $t('modal.createDevice') : $t('common.save') }}
+        </button>
       </div>
     </div>
   </div>

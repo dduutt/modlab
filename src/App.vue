@@ -7,7 +7,6 @@ import DataGrid from './components/DataGrid.vue';
 import StatusBar from './components/StatusBar.vue';
 import SettingsModal, { type ConnectionConfig } from './components/SettingsModal.vue';
 import TrafficLog, { type LogEntry } from './components/TrafficLog.vue';
-import NewDeviceModal from './components/NewDeviceModal.vue';
 import ConfirmModal from './components/ConfirmModal.vue';
 import AboutModal from './components/AboutModal.vue';
 import { appendLog } from './utils/logging';
@@ -233,6 +232,20 @@ const activeTab = computed(() => {
 const existingNames = computed(() => {
   return tabs.value.map(t => t.title);
 });
+
+const newDeviceDefaultConfig = computed<ConnectionConfig>(() => ({
+  role: 'Slave',
+  protocol: 'TCP',
+  ip: '0.0.0.0',
+  port: 502,
+  serialPort: 'COM1',
+  baudRate: 9600,
+  dataBits: 8,
+  stopBits: 1,
+  parity: 'None',
+  timeoutMs: 1000,
+  retries: 3,
+}));
 
 const allLogs = computed(() => {
   const aggregated: LogEntry[] = [];
@@ -517,32 +530,14 @@ function handleSelectTab(id: string) {
   activeTabId.value = id;
 }
 
-function handleRenameTab(id: string, newTitle: string) {
-  const tab = tabs.value.find(t => t.id === id);
-  if (tab) {
-    tab.title = newTitle;
-  }
-}
-
-function handleCreateDevice(name: string, role: 'Slave' | 'Master') {
+function handleCreateDevice(newConnection: ConnectionConfig, name?: string) {
+  const role = newConnection.role || 'Slave';
+  const deviceName = name?.trim() || (role === 'Master' ? 'Master 1' : 'Slave 1');
   const newId = `${role.toLowerCase()}-${Date.now()}`;
-  const count = tabs.value.length + 1;
   tabs.value.push({
     id: newId,
-    title: name,
-    connection: {
-      role,
-      protocol: 'TCP',
-      ip: role === 'Master' ? '127.0.0.1' : '0.0.0.0',
-      port: 502,
-      serialPort: `COM${count}`,
-      baudRate: 9600,
-      dataBits: 8,
-      stopBits: 1,
-      parity: 'None',
-      timeoutMs: 1000,
-      retries: 3,
-    },
+    title: deviceName,
+    connection: { ...newConnection },
     connected: false,
     config: {
       unitId: 1,
@@ -557,10 +552,11 @@ function handleCreateDevice(name: string, role: 'Slave' | 'Master') {
     },
     values: {},
     logs: [],
-    statusMessage: `[${name}] Idle.`,
+    statusMessage: `[${deviceName}] Idle.`,
     statusType: 'info',
   });
   activeTabId.value = newId;
+  showNewDeviceModal.value = false;
 }
 
 function handleCloseTabRequest(id: string) {
@@ -783,9 +779,12 @@ async function handleUpdateCellPair(address1: number, value1: number, address2: 
   }
 }
 
-function handleSaveSettings(newConnection: ConnectionConfig) {
+function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
   if (!activeTab.value || activeTab.value.connected || activeTab.value.busy) return;
   activeTab.value.connection = newConnection;
+  if (newName && newName.trim()) {
+    activeTab.value.title = newName.trim();
+  }
 }
 
 
@@ -799,7 +798,6 @@ function handleSaveSettings(newConnection: ConnectionConfig) {
       @select-tab="handleSelectTab"
       @add-tab="showNewDeviceModal = true"
       @close-tab="handleCloseTabRequest"
-      @rename-tab="handleRenameTab"
     />
 
     <Toolbar
@@ -874,8 +872,20 @@ function handleSaveSettings(newConnection: ConnectionConfig) {
       v-if="activeTab"
       :show="showSettings"
       :config="activeTab.connection"
+      :device-name="activeTab.title"
+      :existing-names="existingNames"
+      mode="edit"
       @close="showSettings = false"
       @save="handleSaveSettings"
+    />
+
+    <SettingsModal
+      :show="showNewDeviceModal"
+      :config="newDeviceDefaultConfig"
+      :existing-names="existingNames"
+      mode="create"
+      @close="showNewDeviceModal = false"
+      @save="handleCreateDevice"
     />
 
     <AboutModal
@@ -884,13 +894,6 @@ function handleSaveSettings(newConnection: ConnectionConfig) {
       :initial-update="updateInfo"
       @close="showAboutModal = false"
       @update-detected="(info) => { hasUpdate = info.available; updateInfo = info; }"
-    />
-
-    <NewDeviceModal
-      :show="showNewDeviceModal"
-      :existingNames="existingNames"
-      @close="showNewDeviceModal = false"
-      @create="handleCreateDevice"
     />
 
     <ConfirmModal

@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { ref, nextTick } from 'vue';
 import { Plus, X } from '@lucide/vue';
 
 interface Tab {
@@ -18,34 +17,7 @@ const emit = defineEmits<{
   (e: 'select-tab', id: string): void;
   (e: 'add-tab'): void;
   (e: 'close-tab', id: string): void;
-  (e: 'rename-tab', id: string, newTitle: string): void;
 }>();
-
-const editingId = ref<string | null>(null);
-const editTitle = ref<string>('');
-const inputRef = ref<HTMLInputElement | null>(null);
-
-async function startRename(tab: Tab) {
-  editingId.value = tab.id;
-  editTitle.value = tab.title;
-  await nextTick();
-  inputRef.value?.focus();
-  inputRef.value?.select();
-}
-
-function saveRename(id: string) {
-  if (editingId.value !== id) return;
-  const trimmed = editTitle.value.trim();
-  if (trimmed) {
-    const isDuplicate = props.tabs.some(
-      t => t.id !== id && t.title.toLowerCase() === trimmed.toLowerCase()
-    );
-    if (!isDuplicate) {
-      emit('rename-tab', id, trimmed);
-    }
-  }
-  editingId.value = null;
-}
 </script>
 
 <template>
@@ -54,7 +26,6 @@ function saveRename(id: string) {
       v-for="tab in props.tabs"
       :key="tab.id"
       @click="emit('select-tab', tab.id)"
-      @dblclick="startRename(tab)"
       :class="[
         'flex shrink-0 items-center gap-2 px-4 py-2 border rounded-t-lg text-sm font-medium transition-all cursor-pointer group',
         tab.id === activeTabId
@@ -69,20 +40,7 @@ function saveRename(id: string) {
         ]"
       ></span>
       
-      <template v-if="editingId === tab.id">
-        <input
-          :ref="el => { inputRef = el as HTMLInputElement | null; }"
-          v-model="editTitle"
-          @blur="saveRename(tab.id)"
-          @keyup.enter="saveRename(tab.id)"
-          @keyup.esc="editingId = null"
-          @click.stop
-          class="px-1.5 py-0.5 border border-blue-500 rounded bg-white outline-none font-medium text-sm text-gray-900 w-24"
-        />
-      </template>
-      <template v-else>
-        <span>{{ tab.title }}</span>
-      </template>
+      <span>{{ tab.title }}</span>
 
       <button
         v-if="props.tabs.length > 1"
