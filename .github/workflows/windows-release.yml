@@ -66,6 +66,9 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
 
       - name: Build Windows executables
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: pnpm tauri build --ci --target x86_64-pc-windows-msvc --bundles nsis
 
       - name: Prepare release assets
@@ -88,6 +91,13 @@ jobs:
           $installers = @(Get-ChildItem -LiteralPath "$output/bundle/nsis" -Filter '*.exe' -File)
           if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)." }
           Copy-Item -LiteralPath $installers[0].FullName -Destination release-assets/Modlab-windows-x64-setup.exe
+
+          # Copy updater artifacts (zip, sig, latest.json)
+          $updaterArtifacts = @(Get-ChildItem -Path "$output", "$output/bundle/nsis" -Include '*.zip', '*.sig', 'latest.json' -Recurse -File -ErrorAction SilentlyContinue)
+          foreach ($artifact in $updaterArtifacts) {
+            Copy-Item -LiteralPath $artifact.FullName -Destination release-assets/ -Force
+          }
+
           Get-ChildItem -LiteralPath release-assets -Filter '*.exe' | ForEach-Object {
             $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($_.Name)"
@@ -111,3 +121,12 @@ jobs:
           gh release create $env:RELEASE_TAG @assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title $env:RELEASE_TITLE --notes-file release-notes.md --latest
           if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }
           "Download: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/releases/tag/$env:RELEASE_TAG" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Preheat Update Cache
+        run: |
+          Write-Host "Preheating edge cache at update.dduu.cloud..."
+          try {
+            Invoke-WebRequest -Uri "https://update.dduu.cloud/dduutt/modlab/latest.json" -Method Head -TimeoutSec 10 -ErrorAction SilentlyContinue
+          } catch {
+            Write-Host "Edge cache preheat ping completed."
+          }

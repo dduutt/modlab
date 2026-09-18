@@ -90,5 +90,18 @@ export default {
     formatType: 'Format / Type',
     newValue: 'Value',
     invalidValue: 'Invalid value or outside the range of this data type.',
+  },
+  updater: {
+    title: 'Software Update',
+    currentVersion: 'Current Version',
+    checkBtn: 'Check for Updates',
+    checking: 'Checking for updates…',
+    upToDate: 'You are on the latest version.',
+    available: 'New version available',
+    updateNow: 'Update Now',
+    downloading: 'Downloading update…',
+    restarting: 'Update installed, restarting…',
+    failed: 'Failed to check for updates. Please try again later.',
+    releaseNotes: 'Release Notes',
   }
 };

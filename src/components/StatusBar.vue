@@ -8,11 +8,14 @@ const props = defineProps<{
   logCount?: number;
   showLogPanel?: boolean;
   language?: 'en' | 'zh';
+  appVersion?: string;
+  hasUpdate?: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: 'toggle-logs'): void;
   (e: 'toggle-language'): void;
+  (e: 'open-about'): void;
 }>();
 
 const timestamp = ref(new Date().toLocaleTimeString());
@@ -49,7 +52,7 @@ const conciseMessage = computed(() => {
       </span>
     </div>
 
-    <!-- Right: Logs Toggle Button & Copyright -->
+    <!-- Right: Language Toggle, Logs Toggle, Copyright, and Version -->
     <div class="flex shrink-0 items-center gap-1">
       <button
         @click="emit('toggle-language')"
@@ -82,6 +85,26 @@ const conciseMessage = computed(() => {
 
       <div class="ml-2 border-l border-gray-200 pl-3 text-gray-400 text-[11px] whitespace-nowrap select-all">
         © Modlab • dote27@163.com
+      </div>
+
+      <!-- Far Right: Version & Update Indicator -->
+      <div class="ml-2 border-l border-gray-200 pl-2">
+        <button
+          @click="emit('open-about')"
+          class="relative inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-mono font-medium text-gray-500 hover:text-blue-600 hover:bg-gray-50 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+          :title="$t('updater.title')"
+        >
+          <span>v{{ appVersion || '0.1.0' }}</span>
+          <!-- Green pulsing badge when update is available -->
+          <span
+            v-if="hasUpdate"
+            class="relative flex h-2 w-2"
+            :title="$t('updater.available') || 'New version available'"
+          >
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+          </span>
+        </button>
       </div>
     </div>
   </div>

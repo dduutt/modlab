@@ -90,5 +90,18 @@ export default {
     formatType: '格式 / 类型',
     newValue: '数值',
     invalidValue: '数值格式错误或超出当前数据类型的范围。',
+  },
+  updater: {
+    title: '软件更新',
+    currentVersion: '当前版本',
+    checkBtn: '检查更新',
+    checking: '正在检查更新…',
+    upToDate: '已是最新版本。',
+    available: '发现新版本',
+    updateNow: '立即更新',
+    downloading: '正在下载更新…',
+    restarting: '安装完成，正在重启…',
+    failed: '检查更新失败，请稍后重试。',
+    releaseNotes: '更新说明',
   }
 };

@@ -9,10 +9,13 @@ import SettingsModal, { type ConnectionConfig } from './components/SettingsModal
 import TrafficLog, { type LogEntry } from './components/TrafficLog.vue';
 import NewDeviceModal from './components/NewDeviceModal.vue';
 import ConfirmModal from './components/ConfirmModal.vue';
+import AboutModal from './components/AboutModal.vue';
 import { appendLog } from './utils/logging';
 import { ModbusService } from './services/modbusService';
+import { UpdateService } from './services/updateService';
 import { generateRandomRegisters, incrementFormattedValue } from './utils/modbusFormatter';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { getVersion } from '@tauri-apps/api/app';
 
 import { useI18n } from 'vue-i18n';
 
@@ -58,6 +61,27 @@ onMounted(async () => {
   } catch (err) {
     console.error('Failed to register traffic-log-entry listener in App.vue:', err);
   }
+
+  // Fetch actual app version from Tauri
+  try {
+    appVersion.value = await getVersion();
+  } catch {
+    // Keep fallback version
+  }
+
+  // Silent check for updates on startup
+  setTimeout(async () => {
+    try {
+      const res = await UpdateService.checkForUpdates();
+      if (res.available) {
+        hasUpdate.value = true;
+        updateInfo.value = res;
+        console.info(`[Update] New version available: v${res.version}`);
+      }
+    } catch {
+      // Ignore background check errors
+    }
+  }, 3000);
 });
 
 interface SessionTab {
@@ -193,6 +217,10 @@ watch(
   { deep: true }
 );
 const showSettings = ref<boolean>(false);
+const showAboutModal = ref<boolean>(false);
+const hasUpdate = ref<boolean>(false);
+const updateInfo = ref<{ available: boolean; version?: string; body?: string } | null>(null);
+const appVersion = ref<string>('0.1.1');
 const showNewDeviceModal = ref<boolean>(false);
 const showConfirmModal = ref<boolean>(false);
 const showLogPanel = ref<boolean>(false);
@@ -835,8 +863,11 @@ function handleSaveSettings(newConnection: ConnectionConfig) {
       :logCount="allLogs.length"
       :showLogPanel="showLogPanel"
       :language="language"
+      :app-version="appVersion"
+      :has-update="hasUpdate"
       @toggle-logs="showLogPanel = !showLogPanel"
       @toggle-language="toggleLanguage"
+      @open-about="showAboutModal = true"
     />
 
     <SettingsModal
@@ -845,6 +876,14 @@ function handleSaveSettings(newConnection: ConnectionConfig) {
       :config="activeTab.connection"
       @close="showSettings = false"
       @save="handleSaveSettings"
+    />
+
+    <AboutModal
+      :show="showAboutModal"
+      :current-version="appVersion"
+      :initial-update="updateInfo"
+      @close="showAboutModal = false"
+      @update-detected="(info) => { hasUpdate = info.available; updateInfo = info; }"
     />
 
     <NewDeviceModal

@@ -109,6 +109,7 @@ watch(
 
 onUnmounted(stopSerialRefresh);
 
+
 function handleSave() {
   if (!canSave.value) return;
   emit('save', { ...form.value, ip: form.value.ip.trim() });
