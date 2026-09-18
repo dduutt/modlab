@@ -724,10 +724,20 @@ async function handleReadOnce() {
   }
 }
 
+const isGridWritable = computed(() => {
+  const tab = activeTab.value;
+  if (!tab || tab.busy) return false;
+  if (['0x02', '0x04'].includes(tab.config.functionCode)) return false;
+  if (tab.connection.role === 'Master') {
+    return Boolean(tab.connected && !tab.isPolling);
+  }
+  return true;
+});
+
 async function handleUpdateCell(address: number, value: number) {
   const operationStarted = Date.now();
   const tab = activeTab.value;
-  if (!tab || !tab.connected || tab.busy || (tab.connection.role === 'Master' && ['0x02', '0x04'].includes(tab.config.functionCode))) return;
+  if (!tab || tab.busy || ['0x02', '0x04'].includes(tab.config.functionCode) || (tab.connection.role === 'Master' && (!tab.connected || tab.isPolling))) return;
   const isCurrent = captureTabRequest(tab);
   broadcastLog(tab, 'TX', `Write Register (Addr: ${address})`, `Val: ${value}`);
   try {
@@ -750,7 +760,7 @@ async function handleUpdateCell(address: number, value: number) {
 async function handleUpdateCellPair(address1: number, value1: number, address2: number, value2: number) {
   const operationStarted = Date.now();
   const tab = activeTab.value;
-  if (!tab || !tab.connected || tab.busy || (tab.connection.role === 'Master' && ['0x02', '0x04'].includes(tab.config.functionCode))) return;
+  if (!tab || tab.busy || ['0x02', '0x04'].includes(tab.config.functionCode) || (tab.connection.role === 'Master' && (!tab.connected || tab.isPolling))) return;
   const isCurrent = captureTabRequest(tab);
   broadcastLog(tab, 'TX', `Write Register Pair (Addr: ${address1}-${address2})`, `Word1: ${value1}, Word2: ${value2}`);
   try {
@@ -833,7 +843,7 @@ function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
     <DataGrid
       v-if="activeTab"
       :key="activeTab.id"
-      :writable="activeTab.connected && !activeTab.busy && (activeTab.connection.role === 'Slave' || !['0x02', '0x04'].includes(activeTab.config.functionCode))"
+      :writable="isGridWritable"
       :startAddress="activeTab.config.startAddress"
       :count="activeTab.config.count"
       :values="activeTab.values"

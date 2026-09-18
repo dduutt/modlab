@@ -52,7 +52,7 @@ watch(() => [props.writable, props.startAddress, props.count, props.dataType, pr
 
 const activeFormat = computed(() => (isCoil.value ? 'Dec' : props.format || 'Dec'));
 
-function isEditableAddress(addr: number): boolean {
+function isValidAddress(addr: number): boolean {
   const target = is32Bit.value && (addr - props.startAddress) % 2 !== 0 ? addr - 1 : addr;
   const width = is32Bit.value ? 2 : 1;
   return target >= props.startAddress && target + width <= props.startAddress + props.count;
@@ -87,7 +87,7 @@ function getPrimaryCellText(addr: number): string {
 }
 
 function handleModalSave(addr: number, parsed: { word1: number; word2?: number } | number) {
-  if (props.writable === false || !isEditableAddress(addr)) return;
+  if (!props.writable || !isValidAddress(addr)) return;
   if (typeof parsed === 'object') {
     emit('update-cell-pair', addr, parsed.word1, addr + 1, parsed.word2 ?? 0);
   } else if (!isNaN(parsed)) {
@@ -96,7 +96,7 @@ function handleModalSave(addr: number, parsed: { word1: number; word2?: number }
 }
 
 function handleCellRightClick(addr: number) {
-  if (props.writable === false || !isEditableAddress(addr)) return;
+  if (!props.writable || !isValidAddress(addr)) return;
   if (isCoil.value) {
     const current = props.values[addr] ?? 0;
     emit('update-cell', addr, current === 1 ? 0 : 1);
@@ -153,9 +153,12 @@ function handleCellRightClick(addr: number) {
               class="p-0 border-r border-gray-200 last:border-r-0 text-center align-middle font-mono"
             >
               <div
-                v-if="isEditableAddress(rowAddr + colOffset - 1)"
-                @contextmenu.prevent="handleCellRightClick(rowAddr + colOffset - 1)"
-                class="w-full h-full py-2.5 px-2 hover:bg-blue-100/40 text-gray-800 transition-colors flex flex-col items-center justify-center leading-tight cursor-default"
+                v-if="isValidAddress(rowAddr + colOffset - 1)"
+                @contextmenu.prevent="props.writable ? handleCellRightClick(rowAddr + colOffset - 1) : null"
+                :class="[
+                  'w-full h-full py-2.5 px-2 text-gray-800 transition-colors flex flex-col items-center justify-center leading-tight cursor-default',
+                  props.writable ? 'hover:bg-blue-100/40' : ''
+                ]"
               >
                 <span>{{ getPrimaryCellText(rowAddr + colOffset - 1) }}</span>
                 <span
