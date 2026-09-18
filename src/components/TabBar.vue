@@ -46,7 +46,7 @@ function getTabRoleShort(tab: Tab): 'S' | 'M' {
       <!-- S / M Role Indicator: Pure mono character, color represents connection status -->
       <span
         :class="[
-          'font-mono text-xs font-bold shrink-0 transition-colors leading-none',
+          'font-mono text-sm font-bold shrink-0 transition-colors leading-none',
           tab.connected
             ? 'text-emerald-600'
             : tab.id === activeTabId
