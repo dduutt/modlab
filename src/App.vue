@@ -791,7 +791,7 @@ function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
 </script>
 
 <template>
-  <div class="h-screen w-screen flex flex-col bg-gray-100 font-sans select-none overflow-hidden">
+  <div class="h-screen w-screen flex flex-col bg-gray-100 font-sans overflow-hidden">
     <TabBar
       :tabs="tabs"
       :activeTabId="activeTabId"

@@ -68,9 +68,9 @@ ${decodeFrame(log).join('\n')}`);
 </script>
 
 <template>
-  <section id="traffic-log-panel" :aria-label="$t('common.logs')" class="shrink-0 border-t border-gray-200 bg-white select-none">
+  <section id="traffic-log-panel" :aria-label="$t('common.logs')" class="shrink-0 border-t border-gray-200 bg-white">
     <!-- Panel Header -->
-    <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-gray-50 border-b border-gray-200">
+    <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-gray-50 border-b border-gray-200 select-none">
       <div class="flex min-w-0 items-center gap-2 text-xs text-gray-600">
         <span class="font-medium">{{ $t('common.logs') }}</span>
         <span class="text-gray-400 font-mono text-[11px] tabular-nums">
@@ -135,11 +135,11 @@ ${decodeFrame(log).join('\n')}`);
           <span :class="['w-12 shrink-0', log.level === 'error' ? 'text-red-600' : log.level === 'success' ? 'text-emerald-600' : 'text-gray-500']">
             {{ log.kind === 'frame' ? log.direction : $t('logWindow.' + log.level) }}
           </span>
-          <span :class="['min-w-0 flex-1 whitespace-pre-wrap break-all select-text font-mono', log.level === 'error' ? 'text-red-600' : 'text-gray-700']" :title="log.message + ' ' + log.bytes">{{ log.bytes }}</span>
+          <span :class="['min-w-0 flex-1 whitespace-pre-wrap break-all font-mono', log.level === 'error' ? 'text-red-600' : 'text-gray-700']" :title="log.message + ' ' + log.bytes">{{ log.bytes }}</span>
           <span v-if="log.durationMs !== undefined" class="shrink-0 text-gray-400">{{ log.durationMs }} ms</span>
           <button @click.stop.prevent="copyLog(log)" :title="$t('common.copy')" :aria-label="$t('common.copy')" class="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"><Copy class="h-3.5 w-3.5" /></button>
         </summary>
-        <div class="select-text whitespace-pre-wrap break-all rounded bg-gray-50 px-3 py-2 text-gray-600">
+        <div class="whitespace-pre-wrap break-all rounded bg-gray-50 px-3 py-2 text-gray-600">
           <div v-for="(line, index) in decodeFrame(log)" :key="index">{{ line }}</div>
         </div>
       </details>

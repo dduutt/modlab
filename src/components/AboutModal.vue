@@ -117,10 +117,10 @@ async function handleApplyUpdate() {
 
 <template>
   <Transition name="modal">
-    <div v-if="show" class="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4 select-none">
+    <div v-if="show" class="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
       <div role="dialog" aria-modal="true" class="modal-card bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-sm overflow-hidden">
       <!-- Modal Header -->
-      <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50/50">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50/50 select-none">
         <h3 class="font-semibold text-gray-900 text-base">{{ $t('updater.title') }}</h3>
         <button
           @click="emit('close')"
