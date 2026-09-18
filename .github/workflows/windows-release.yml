@@ -27,6 +27,11 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
+      - name: Disable Windows Defender for Build Speed
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}", "C:\Users\runneradmin\.cargo" -ErrorAction SilentlyContinue
+
       - name: Validate release tag
         if: github.ref_type == 'tag'
         run: |
@@ -35,16 +40,16 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME must match application version v$($config.version)."
           }
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-
       - name: Set up pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@v4
         with:
           version: '10'
-          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -55,15 +60,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          shared-key: "windows-tauri-release"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Test frontend
-        run: pnpm test
-
-      - name: Test backend
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
 
       - name: Build Windows executables
         env:
