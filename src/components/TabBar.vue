@@ -43,15 +43,15 @@ function getTabRoleShort(tab: Tab): 'S' | 'M' {
           : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100 hover:text-gray-700'
       ]"
     >
-      <!-- S / M Role Indicator: Color represents connection status -->
+      <!-- S / M Role Indicator: Pure mono character, color represents connection status -->
       <span
         :class="[
-          'w-4 h-4 flex items-center justify-center text-[10px] font-mono font-bold rounded shrink-0 transition-colors',
+          'font-mono text-xs font-bold shrink-0 transition-colors leading-none',
           tab.connected
-            ? 'text-emerald-600 bg-emerald-50/90 ring-1 ring-emerald-200/60'
+            ? 'text-emerald-600'
             : tab.id === activeTabId
-              ? 'text-gray-600 bg-gray-100'
-              : 'text-gray-400 bg-gray-100/70'
+              ? 'text-gray-700'
+              : 'text-gray-400 group-hover:text-gray-500'
         ]"
         :title="getTabRoleShort(tab) === 'M' ? 'Master' : 'Slave'"
       >
