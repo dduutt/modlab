@@ -33,7 +33,7 @@ const emit = defineEmits<{
 }>();
 
 const form = ref<ConnectionConfig>({ ...props.config });
-const deviceName = ref<string>(props.deviceName || 'Device');
+const deviceName = ref<string>(props.mode === 'create' ? '' : (props.deviceName || 'Device'));
 const userHasEdited = ref<boolean>(false);
 const serialPorts = ref<string[]>([]);
 const portsLoading = ref(false);
@@ -43,29 +43,9 @@ let portRequestId = 0;
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 const SERIAL_REFRESH_INTERVAL_MS = 1000;
 
-function getSuggestedName(selectedRole: 'Slave' | 'Master'): string {
-  const prefix = selectedRole;
-  const names = props.existingNames || [];
-  let index = 1;
-  while (names.some(n => n.toLowerCase() === `${prefix.toLowerCase()} ${index}`)) {
-    index++;
-  }
-  return `${prefix} ${index}`;
-}
-
 function selectRole(newRole: 'Slave' | 'Master') {
   if (props.mode === 'edit') return;
   form.value.role = newRole;
-  if (!userHasEdited.value) {
-    deviceName.value = getSuggestedName(newRole);
-  }
-  if (form.value.protocol === 'TCP') {
-    if (newRole === 'Master' && form.value.ip === '0.0.0.0') {
-      form.value.ip = '127.0.0.1';
-    } else if (newRole === 'Slave' && form.value.ip === '127.0.0.1') {
-      form.value.ip = '0.0.0.0';
-    }
-  }
 }
 
 function handleNameInput() {
@@ -154,10 +134,8 @@ watch(
       if (props.mode === 'create') {
         form.value.role = form.value.role || 'Slave';
         form.value.port = form.value.port || 502;
-        if (form.value.protocol === 'TCP') {
-          form.value.ip = form.value.role === 'Master' ? '127.0.0.1' : '0.0.0.0';
-        }
-        deviceName.value = getSuggestedName(form.value.role);
+        form.value.ip = form.value.ip || '127.0.0.1';
+        deviceName.value = '';
       } else {
         deviceName.value = props.deviceName || 'Device';
       }
@@ -181,7 +159,7 @@ onUnmounted(stopSerialRefresh);
 
 function handleSave() {
   if (!canSave.value) return;
-  const name = deviceName.value.trim() || (props.mode === 'create' ? getSuggestedName(form.value.role) : (props.deviceName || 'Device'));
+  const name = deviceName.value.trim();
   const config = { ...form.value, ip: form.value.ip.trim() };
   emit('save', config, name);
   if (props.mode === 'create') {
@@ -197,7 +175,7 @@ function handleSave() {
       role="dialog"
       aria-modal="true"
       :aria-label="mode === 'create' ? $t('modal.addDevice') : $t('modal.connectionSettings')"
-      class="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-md max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+      class="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-md max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150 transition-[height] duration-200"
     >
       <!-- Modal Header -->
       <div class="flex shrink-0 items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50/50">
@@ -219,7 +197,6 @@ function handleSave() {
               v-model="deviceName"
               @input="handleNameInput"
               type="text"
-              :placeholder="$t('modal.e_g_slave2')"
               class="w-full h-9 px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 bg-white font-medium text-sm"
             />
           </div>
@@ -254,7 +231,7 @@ function handleSave() {
           </div>
         </div>
 
-        <p v-if="nameValidationError" role="alert" class="text-xs text-red-600 -mt-2">
+        <p v-if="nameValidationError && (userHasEdited || mode === 'edit')" role="alert" class="text-xs text-red-600 -mt-2">
           {{ $t(nameValidationError) }}
         </p>
 
@@ -313,34 +290,36 @@ function handleSave() {
           </div>
         </div>
 
-        <!-- Advanced Parameters Header -->
-        <div class="pt-1 border-t border-gray-100 flex items-center justify-between">
-          <span class="text-xs font-semibold text-gray-500">{{ $t('modal.advancedSettings') }}</span>
-        </div>
-
-        <!-- RTU Advanced Options (Data Bits, Stop Bits, Parity) -->
-        <div v-if="form.protocol === 'RTU'" class="grid grid-cols-3 gap-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
-          <div>
-            <label class="block text-xs font-semibold text-gray-500 mb-1">{{ $t('modal.dataBits') }}</label>
-            <select v-model.number="form.dataBits" class="w-full h-9 px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 bg-white font-mono text-sm">
-              <option :value="7">7</option>
-              <option :value="8">8</option>
-            </select>
-          </div>
-          <div>
-            <label for="serial-stop-bits" class="block text-xs font-semibold text-gray-500 mb-1">{{ $t('modal.stopBits') }}</label>
-            <select id="serial-stop-bits" v-model.number="form.stopBits" class="w-full h-9 px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 bg-white font-mono text-sm">
-              <option :value="1">1</option>
-              <option :value="2">2</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-xs font-semibold text-gray-500 mb-1">{{ $t('modal.parity') }}</label>
-            <select v-model="form.parity" class="w-full h-9 px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 bg-white font-mono text-sm">
-              <option value="None">{{ $t('modal.parityNone') }}</option>
-              <option value="Even">{{ $t('modal.parityEven') }}</option>
-              <option value="Odd">{{ $t('modal.parityOdd') }}</option>
-            </select>
+        <!-- RTU Serial Options (Data Bits, Stop Bits, Parity) with smooth height transition -->
+        <div
+          class="grid transition-all duration-200 ease-in-out"
+          :class="form.protocol === 'RTU' ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0 pointer-events-none'"
+        >
+          <div class="overflow-hidden">
+            <div class="grid grid-cols-3 gap-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
+              <div>
+                <label class="block text-xs font-semibold text-gray-500 mb-1">{{ $t('modal.dataBits') }}</label>
+                <select v-model.number="form.dataBits" class="w-full h-9 px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 bg-white font-mono text-sm">
+                  <option :value="7">7</option>
+                  <option :value="8">8</option>
+                </select>
+              </div>
+              <div>
+                <label for="serial-stop-bits" class="block text-xs font-semibold text-gray-500 mb-1">{{ $t('modal.stopBits') }}</label>
+                <select id="serial-stop-bits" v-model.number="form.stopBits" class="w-full h-9 px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 bg-white font-mono text-sm">
+                  <option :value="1">1</option>
+                  <option :value="2">2</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-gray-500 mb-1">{{ $t('modal.parity') }}</label>
+                <select v-model="form.parity" class="w-full h-9 px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 bg-white font-mono text-sm">
+                  <option value="None">{{ $t('modal.parityNone') }}</option>
+                  <option value="Even">{{ $t('modal.parityEven') }}</option>
+                  <option value="Odd">{{ $t('modal.parityOdd') }}</option>
+                </select>
+              </div>
+            </div>
           </div>
         </div>
 

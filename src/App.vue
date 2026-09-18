@@ -110,7 +110,7 @@ function getDefaultTabs(): SessionTab[] {
       connection: {
         role: 'Slave',
         protocol: 'TCP',
-        ip: '0.0.0.0',
+        ip: '127.0.0.1',
         port: 502,
         serialPort: 'COM1',
         baudRate: 9600,
@@ -152,7 +152,7 @@ function loadSavedState(): { loadedTabs: SessionTab[]; savedActiveId: string } {
           connection: t.connection || {
             role: 'Slave',
             protocol: 'TCP',
-            ip: '0.0.0.0',
+            ip: '127.0.0.1',
             port: 502,
             serialPort: 'COM1',
             baudRate: 9600,
@@ -236,7 +236,7 @@ const existingNames = computed(() => {
 const newDeviceDefaultConfig = computed<ConnectionConfig>(() => ({
   role: 'Slave',
   protocol: 'TCP',
-  ip: '0.0.0.0',
+  ip: '127.0.0.1',
   port: 502,
   serialPort: 'COM1',
   baudRate: 9600,
