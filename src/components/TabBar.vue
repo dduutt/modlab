@@ -23,50 +23,39 @@ const emit = defineEmits<{
   (e: 'close-tab', id: string): void;
 }>();
 
-function getTabRole(tab: Tab): 'Slave' | 'Master' {
-  if (tab.connection?.role) {
-    return tab.connection.role;
-  }
-  return tab.title.toLowerCase().includes('master') ? 'Master' : 'Slave';
+function getTabRoleShort(tab: Tab): 'S' | 'M' {
+  const role = tab.connection?.role || (tab.title.toLowerCase().includes('master') ? 'Master' : 'Slave');
+  return role === 'Master' ? 'M' : 'S';
 }
 </script>
 
 <template>
-  <div class="flex shrink-0 overflow-x-auto overflow-y-hidden items-center bg-gray-100/75 px-3 pt-1.5 border-b border-gray-200 gap-1.5 select-none scrollbar-none">
+  <div class="flex shrink-0 overflow-x-auto overflow-y-hidden items-center bg-white px-3 pt-2 border-b border-gray-200 gap-1.5 select-none scrollbar-none">
     <div
       v-for="tab in props.tabs"
       :key="tab.id"
       @click="emit('select-tab', tab.id)"
       :title="tab.title"
       :class="[
-        'flex shrink-0 items-center gap-2 px-3 py-1.5 border rounded-t-md text-xs font-medium transition-all cursor-pointer group relative -mb-px',
+        'flex shrink-0 items-center gap-2 px-3.5 py-1.5 border rounded-t-lg text-xs font-medium transition-all cursor-pointer group relative -mb-px',
         tab.id === activeTabId
           ? 'bg-white border-gray-200 border-b-white text-gray-900 shadow-2xs z-10'
-          : 'bg-gray-50/70 border-gray-200/80 border-b-gray-200 text-gray-500 hover:bg-gray-100/90 hover:text-gray-700'
+          : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100 hover:text-gray-700'
       ]"
     >
-      <!-- Connection Indicator: Green only when connected, neutral gray when disconnected -->
+      <!-- S / M Role Indicator: Color represents connection status -->
       <span
         :class="[
-          'w-2 h-2 rounded-full shrink-0 transition-colors',
-          tab.connected ? 'bg-emerald-500 shadow-xs ring-2 ring-emerald-100' : 'bg-gray-300'
-        ]"
-      ></span>
-
-      <!-- Master / Slave Micro-Badge -->
-      <span
-        :class="[
-          'text-[10px] font-semibold px-1.5 py-0.5 rounded leading-none uppercase tracking-wide shrink-0 transition-colors',
-          getTabRole(tab) === 'Master'
-            ? tab.id === activeTabId
-              ? 'bg-blue-100 text-blue-700 border border-blue-200/80'
-              : 'bg-blue-50 text-blue-600/80 border border-blue-100'
+          'w-4 h-4 flex items-center justify-center text-[10px] font-mono font-bold rounded shrink-0 transition-colors',
+          tab.connected
+            ? 'text-emerald-600 bg-emerald-50/90 ring-1 ring-emerald-200/60'
             : tab.id === activeTabId
-              ? 'bg-amber-100 text-amber-800 border border-amber-200/80'
-              : 'bg-amber-50 text-amber-700/80 border border-amber-100'
+              ? 'text-gray-600 bg-gray-100'
+              : 'text-gray-400 bg-gray-100/70'
         ]"
+        :title="getTabRoleShort(tab) === 'M' ? 'Master' : 'Slave'"
       >
-        {{ getTabRole(tab) }}
+        {{ getTabRoleShort(tab) }}
       </span>
 
       <!-- Tab Title -->
@@ -89,7 +78,7 @@ function getTabRole(tab: Tab): 'Slave' | 'Master' {
     <!-- Add Tab Button -->
     <button
       @click="emit('add-tab')"
-      class="shrink-0 p-1.5 mb-px text-gray-500 hover:text-gray-800 hover:bg-gray-200/60 rounded-md transition cursor-pointer"
+      class="shrink-0 p-1.5 mb-px text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition cursor-pointer"
       :title="$t ? $t('modal.addDevice') : 'Add Device'"
     >
       <Plus class="w-4 h-4" />
