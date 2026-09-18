@@ -32,14 +32,8 @@ const conciseMessage = computed(() => {
 
 <template>
   <div class="flex items-center justify-between gap-3 px-4 py-1 bg-white border-t border-gray-200 text-xs select-none min-h-[36px] shrink-0">
-    <!-- Left: Status Indicator & Message -->
-    <div class="flex min-w-0 flex-1 items-center gap-2">
-      <span
-        :class="[
-          'w-2 h-2 rounded-full shrink-0',
-          type === 'error' ? 'bg-red-500 animate-pulse' : type === 'success' ? 'bg-emerald-500' : 'bg-blue-500'
-        ]"
-      ></span>
+    <!-- Left: Status Message -->
+    <div class="flex min-w-0 flex-1 items-center">
       <span
         :class="[
           'font-medium truncate',
