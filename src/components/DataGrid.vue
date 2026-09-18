@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { formatRegisterValue } from '../utils/modbusFormatter';
-import { Copy, Edit3, RotateCcw } from '@lucide/vue';
+import { Copy, Edit3, RotateCcw, ToggleLeft } from '@lucide/vue';
 import EditValueModal from './EditValueModal.vue';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
 
 const props = defineProps<{
   startAddress: number;
@@ -29,13 +36,7 @@ function getRawHex(addr: number): string {
 const showEditModal = ref<boolean>(false);
 const modalAddress = ref<number | null>(null);
 const modalCurrentValueText = ref<string>('');
-
-const contextMenu = ref<{
-  show: boolean;
-  x: number;
-  y: number;
-  address: number | null;
-}>({ show: false, x: 0, y: 0, address: null });
+const contextAddress = ref<number | null>(null);
 
 const isCoil = computed(() => {
   return props.functionCode === '0x01' || props.functionCode === '0x02';
@@ -47,7 +48,7 @@ const is32Bit = computed(() => {
 
 watch(() => [props.writable, props.startAddress, props.count, props.dataType, props.functionCode, props.format, props.byteOrder], () => {
   showEditModal.value = false;
-  contextMenu.value.show = false;
+  contextAddress.value = null;
 });
 
 const activeFormat = computed(() => (isCoil.value ? 'Dec' : props.format || 'Dec'));
@@ -86,22 +87,6 @@ function getPrimaryCellText(addr: number): string {
   return formatRegisterValue(props.values[addr] ?? 0, activeFormat.value, props.dataType, props.byteOrder);
 }
 
-function handleCellDoubleClick(addr: number) {
-  if (props.writable === false || !isEditableAddress(addr)) return;
-  if (isCoil.value) {
-    const current = props.values[addr] ?? 0;
-    emit('update-cell', addr, current === 1 ? 0 : 1);
-  } else {
-    let targetAddr = addr;
-    if (is32Bit.value && (addr - props.startAddress) % 2 !== 0) {
-      targetAddr = addr - 1;
-    }
-    modalAddress.value = targetAddr;
-    modalCurrentValueText.value = getPrimaryCellText(targetAddr);
-    showEditModal.value = true;
-  }
-}
-
 function handleModalSave(addr: number, parsed: { word1: number; word2?: number } | number) {
   if (props.writable === false || !isEditableAddress(addr)) return;
   if (typeof parsed === 'object') {
@@ -111,137 +96,158 @@ function handleModalSave(addr: number, parsed: { word1: number; word2?: number }
   }
 }
 
-function handleContextMenu(e: MouseEvent, addr: number) {
-  e.preventDefault();
-  if (!isEditableAddress(addr)) {
-    closeContextMenu();
-    return;
+function handleCellContextMenu(addr: number) {
+  if (isEditableAddress(addr)) {
+    contextAddress.value = addr;
+  } else {
+    contextAddress.value = null;
   }
-  contextMenu.value = {
-    show: true,
-    x: e.clientX,
-    y: e.clientY,
-    address: addr,
-  };
-}
-
-function closeContextMenu() {
-  contextMenu.value.show = false;
 }
 
 function copyValue() {
-  if (contextMenu.value.address !== null) {
-    let addr = contextMenu.value.address;
+  if (contextAddress.value !== null) {
+    let addr = contextAddress.value;
     if (is32Bit.value && (addr - props.startAddress) % 2 !== 0) {
       addr = addr - 1;
     }
     const text = getPrimaryCellText(addr);
     navigator.clipboard.writeText(text);
   }
-  closeContextMenu();
 }
 
 function triggerEdit() {
-  if (contextMenu.value.address !== null) {
-    handleCellDoubleClick(contextMenu.value.address);
-  }
-  closeContextMenu();
-}
-
-function resetToZero() {
-  if (props.writable === false) return;
-  if (contextMenu.value.address !== null) {
-    let addr = contextMenu.value.address;
+  if (contextAddress.value !== null && props.writable !== false) {
+    let addr = contextAddress.value;
     if (is32Bit.value && (addr - props.startAddress) % 2 !== 0) {
       addr = addr - 1;
     }
-    if (is32Bit.value) {
-      emit('update-cell-pair', addr, 0, addr + 1, 0);
-    } else {
-      emit('update-cell', addr, 0);
-    }
+    modalAddress.value = addr;
+    modalCurrentValueText.value = getPrimaryCellText(addr);
+    showEditModal.value = true;
   }
-  closeContextMenu();
+}
+
+function toggleCoil() {
+  if (contextAddress.value !== null && props.writable !== false && isCoil.value) {
+    const current = props.values[contextAddress.value] ?? 0;
+    emit('update-cell', contextAddress.value, current === 1 ? 0 : 1);
+  }
+}
+
+function resetToZero() {
+  if (props.writable === false || contextAddress.value === null) return;
+  let addr = contextAddress.value;
+  if (is32Bit.value && (addr - props.startAddress) % 2 !== 0) {
+    addr = addr - 1;
+  }
+  if (is32Bit.value) {
+    emit('update-cell-pair', addr, 0, addr + 1, 0);
+  } else {
+    emit('update-cell', addr, 0);
+  }
 }
 </script>
 
 <template>
-  <div class="flex-1 p-4 overflow-auto bg-gray-50/50 relative" @click="closeContextMenu">
-    <div class="bg-white border border-gray-200 rounded-xl shadow-2xs overflow-hidden">
-      <table class="w-full text-sm text-center border-collapse">
-        <thead>
-          <tr class="bg-gray-50/80 border-b border-gray-200 text-gray-600 font-medium">
-            <th class="py-2.5 px-2 w-20 shrink-0 border-r border-gray-200 font-semibold select-none">{{ $t('dataGrid.address') }}</th>
-            <th v-for="col in 10" :key="col - 1" class="py-2.5 px-2 min-w-[70px] whitespace-nowrap border-r border-gray-200 last:border-r-0 select-none">
-              {{ col - 1 }}
-            </th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-200">
-          <tr
-            v-for="(rowAddr, index) in rows"
-            :key="rowAddr"
-            :class="[
-              'transition-colors hover:bg-blue-50/40',
-              index % 2 === 1 ? 'bg-slate-50/60' : 'bg-white'
-            ]"
-          >
-            <td
-              :class="[
-                'py-2.5 px-2 font-semibold text-gray-700 border-r border-gray-200 font-mono select-none',
-                index % 2 === 1 ? 'bg-slate-100/70' : 'bg-gray-50/80'
-              ]"
-            >
-              {{ rowAddr }}
-            </td>
-            <td
-              v-for="colOffset in 10"
-              :key="colOffset - 1"
-              @dblclick="handleCellDoubleClick(rowAddr + colOffset - 1)"
-              @contextmenu="handleContextMenu($event, rowAddr + colOffset - 1)"
-              class="py-2.5 px-2 min-w-[70px] whitespace-nowrap border-r border-gray-200 last:border-r-0 font-mono cursor-pointer hover:bg-blue-100/40 text-gray-800 transition-colors select-none"
-            >
-              <div class="flex flex-col items-center justify-center py-0.5 leading-tight">
-                <span>{{ getPrimaryCellText(rowAddr + colOffset - 1) }}</span>
-                <span v-if="props.raw" class="text-[10px] text-gray-400 font-mono tracking-wider font-normal leading-none mt-0.5 select-none">
-                  {{ getRawHex(rowAddr + colOffset - 1) }}
-                </span>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+  <ContextMenu>
+    <ContextMenuTrigger as-child>
+      <div class="flex-1 p-4 overflow-auto bg-gray-50/50 relative">
+        <div class="bg-white border border-gray-200 rounded-xl shadow-2xs overflow-hidden">
+          <table class="w-full text-sm text-center border-collapse">
+            <thead>
+              <tr class="bg-gray-50/80 border-b border-gray-200 text-gray-600 font-medium">
+                <th class="py-2.5 px-2 w-20 shrink-0 border-r border-gray-200 font-semibold select-none">{{ $t('dataGrid.address') }}</th>
+                <th v-for="col in 10" :key="col - 1" class="py-2.5 px-2 min-w-[70px] whitespace-nowrap border-r border-gray-200 last:border-r-0 select-none">
+                  {{ col - 1 }}
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+              <tr
+                v-for="(rowAddr, index) in rows"
+                :key="rowAddr"
+                :class="[
+                  'transition-colors hover:bg-blue-50/40',
+                  index % 2 === 1 ? 'bg-slate-50/60' : 'bg-white'
+                ]"
+              >
+                <td
+                  :class="[
+                    'py-2.5 px-2 font-semibold text-gray-700 border-r border-gray-200 font-mono select-none',
+                    index % 2 === 1 ? 'bg-slate-100/70' : 'bg-gray-50/80'
+                  ]"
+                >
+                  {{ rowAddr }}
+                </td>
+                <td
+                  v-for="colOffset in 10"
+                  :key="colOffset - 1"
+                  @contextmenu="handleCellContextMenu(rowAddr + colOffset - 1)"
+                  class="py-2.5 px-2 min-w-[70px] whitespace-nowrap border-r border-gray-200 last:border-r-0 font-mono cursor-default hover:bg-blue-100/40 text-gray-800 transition-colors select-none"
+                >
+                  <div class="flex flex-col items-center justify-center py-0.5 leading-tight">
+                    <span>{{ getPrimaryCellText(rowAddr + colOffset - 1) }}</span>
+                    <span v-if="props.raw" class="text-[10px] text-gray-400 font-mono tracking-wider font-normal leading-none mt-0.5 select-none">
+                      {{ getRawHex(rowAddr + colOffset - 1) }}
+                    </span>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
 
-    <!-- Edit Value Popup Modal -->
-    <EditValueModal
-      :show="showEditModal"
-      :address="modalAddress"
-      :currentValueText="modalCurrentValueText"
-      :format="activeFormat"
-      :dataType="props.dataType || 'Int16'"
-      :byteOrder="props.byteOrder || 'ABCD'"
-      :is32Bit="is32Bit"
-      @close="showEditModal = false"
-      @save="handleModalSave"
-    />
+        <!-- Edit Value Popup Modal -->
+        <EditValueModal
+          :show="showEditModal"
+          :address="modalAddress"
+          :currentValueText="modalCurrentValueText"
+          :format="activeFormat"
+          :dataType="props.dataType || 'Int16'"
+          :byteOrder="props.byteOrder || 'ABCD'"
+          :is32Bit="is32Bit"
+          @close="showEditModal = false"
+          @save="handleModalSave"
+        />
+      </div>
+    </ContextMenuTrigger>
 
-    <!-- Context Menu -->
-    <div
-      v-if="contextMenu.show"
-      :style="{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }"
-      class="fixed z-50 bg-white border border-gray-200 shadow-xl rounded-xl py-1 w-36 text-xs text-gray-700 animate-in fade-in zoom-in-95 duration-100 select-none"
-    >
-      <button @click="copyValue" class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-100 w-full text-left font-medium cursor-pointer">
-        <Copy class="w-3.5 h-3.5 text-gray-500" /> {{ $t('common.copy') }}
-      </button>
-      <button @click="triggerEdit" :disabled="writable === false" class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-100 w-full text-left font-medium cursor-pointer disabled:opacity-50">
-        <Edit3 class="w-3.5 h-3.5 text-gray-500" /> {{ $t('common.edit') }}
-      </button>
-      <div class="my-1 border-t border-gray-100"></div>
-      <button @click="resetToZero" :disabled="writable === false" class="flex items-center gap-2 px-3 py-1.5 hover:bg-red-50 text-red-600 w-full text-left font-medium cursor-pointer disabled:opacity-50">
-        <RotateCcw class="w-3.5 h-3.5 text-red-500" /> {{ $t('dataGrid.resetToZero') }}
-      </button>
-    </div>
-  </div>
+    <ContextMenuContent v-if="contextAddress !== null" class="w-40 text-xs">
+      <ContextMenuItem @click="copyValue" class="gap-2 cursor-pointer">
+        <Copy class="w-3.5 h-3.5 text-gray-500" />
+        <span>{{ $t('common.copy') }}</span>
+      </ContextMenuItem>
+
+      <ContextMenuItem
+        v-if="isCoil"
+        @click="toggleCoil"
+        :disabled="writable === false"
+        class="gap-2 cursor-pointer"
+      >
+        <ToggleLeft class="w-3.5 h-3.5 text-gray-500" />
+        <span>切换 (0/1)</span>
+      </ContextMenuItem>
+
+      <ContextMenuItem
+        @click="triggerEdit"
+        :disabled="writable === false"
+        class="gap-2 cursor-pointer"
+      >
+        <Edit3 class="w-3.5 h-3.5 text-gray-500" />
+        <span>{{ $t('common.edit') }}</span>
+      </ContextMenuItem>
+
+      <ContextMenuSeparator />
+
+      <ContextMenuItem
+        @click="resetToZero"
+        :disabled="writable === false"
+        variant="destructive"
+        class="gap-2 cursor-pointer text-red-600 focus:text-red-600 focus:bg-red-50"
+      >
+        <RotateCcw class="w-3.5 h-3.5 text-red-500" />
+        <span>{{ $t('dataGrid.resetToZero') }}</span>
+      </ContextMenuItem>
+    </ContextMenuContent>
+  </ContextMenu>
 </template>

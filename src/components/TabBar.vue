@@ -1,5 +1,11 @@
 <script setup lang="ts">
 import { Plus, X } from '@lucide/vue';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 interface Tab {
   id: string;
@@ -62,16 +68,24 @@ function getTabRoleTooltip(tab: Tab): string {
           : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100 hover:text-gray-700'
       ]"
     >
-      <!-- S / M Role Indicator: Pure mono character, color dynamically tracks latest status -->
-      <span
-        :class="[
-          'font-mono text-sm font-bold shrink-0 transition-colors leading-none',
-          getTabStatusColorClass(tab)
-        ]"
-        :title="getTabRoleTooltip(tab)"
-      >
-        {{ getTabRoleShort(tab) }}
-      </span>
+      <!-- S / M Role Indicator: Pure mono character with responsive tooltip -->
+      <TooltipProvider :delay-duration="150">
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <span
+              :class="[
+                'font-mono text-sm font-bold shrink-0 transition-colors leading-none cursor-default',
+                getTabStatusColorClass(tab)
+              ]"
+            >
+              {{ getTabRoleShort(tab) }}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" :side-offset="6" class="text-[11px] py-1 px-2 font-sans font-medium">
+            {{ getTabRoleTooltip(tab) }}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
 
       <!-- Tab Title -->
       <span class="truncate max-w-[130px] font-medium leading-tight text-gray-700 group-hover:text-gray-900 transition-colors">

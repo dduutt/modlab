@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue';
-import { X } from '@lucide/vue';
 import { parseFormattedRegisterValue } from '../utils/modbusFormatter';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 const props = defineProps<{
   show: boolean;
@@ -101,28 +107,23 @@ function handleSave() {
 </script>
 
 <template>
-  <div v-if="show" class="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4 select-none">
-    <div class="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-xs overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-      <!-- Modal Header -->
-      <div class="flex items-center justify-between px-5 py-3.5 border-b border-gray-100 bg-gray-50/50">
-        <div class="flex items-center gap-2">
-          <h3 class="font-semibold text-gray-900 text-sm">{{ $t('dataGrid.editRegisterValue') }}</h3>
-        </div>
-        <button @click="emit('close')" class="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-200/60 rounded-lg transition cursor-pointer">
-          <X class="w-4 h-4" />
-        </button>
-      </div>
+  <Dialog :open="show" @update:open="(val: boolean) => { if (!val) emit('close'); }">
+    <DialogContent class="max-w-xs rounded-xl p-5 select-none bg-white">
+      <DialogHeader class="space-y-1">
+        <DialogTitle class="text-sm font-semibold text-gray-900">
+          {{ $t('dataGrid.editRegisterValue') }}
+        </DialogTitle>
+      </DialogHeader>
 
-      <!-- Modal Body -->
-      <div class="p-4 space-y-3 text-xs">
-        <div class="flex items-center justify-between bg-gray-50 px-3 py-2 rounded-xl border border-gray-100">
+      <div class="space-y-2.5 text-xs py-2">
+        <div class="flex items-center justify-between bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-100">
           <span class="text-gray-500 font-medium">{{ $t('dataGrid.address') }}</span>
           <span class="font-mono font-bold text-gray-900">
             {{ address !== null ? (is32Bit ? `${address} - ${address + 1}` : address) : '-' }}
           </span>
         </div>
 
-        <div class="flex items-center justify-between bg-gray-50 px-3 py-2 rounded-xl border border-gray-100">
+        <div class="flex items-center justify-between bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-100">
           <span class="text-gray-500 font-medium">{{ $t('dataGrid.formatType') }}</span>
           <span class="font-mono text-blue-600 font-semibold">
             {{ dataType }} ({{ format }})
@@ -137,29 +138,29 @@ function handleSave() {
             :maxlength="maxLength"
             @input="handleInputFilter"
             @keyup.enter="handleSave"
-            @keyup.esc="emit('close')"
             type="text"
-            class="w-full px-3 py-2 border border-gray-200 rounded-xl outline-none focus:border-blue-500 font-mono text-sm font-semibold bg-white text-gray-900 shadow-2xs"
+            class="w-full px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 font-mono text-sm font-semibold bg-white text-gray-900 shadow-2xs"
           />
-          <p v-if="invalidValue" role="alert" class="mt-2 text-red-600">{{ $t('dataGrid.invalidValue') }}</p>
+          <p v-if="invalidValue" role="alert" class="mt-1.5 text-xs text-red-600 font-medium">{{ $t('dataGrid.invalidValue') }}</p>
         </div>
       </div>
 
-      <!-- Modal Footer -->
-      <div class="flex items-center justify-end gap-2 px-4 py-3 bg-gray-50/80 border-t border-gray-100">
+      <DialogFooter class="mt-2 gap-2">
         <button
+          type="button"
           @click="emit('close')"
-          class="px-3.5 py-1.5 rounded-xl text-gray-600 hover:bg-gray-200/60 font-medium transition text-xs cursor-pointer"
+          class="px-3.5 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 font-medium transition text-xs cursor-pointer"
         >
           {{ $t('common.cancel') }}
         </button>
         <button
+          type="button"
           @click="handleSave"
-          class="px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs transition text-xs cursor-pointer"
+          class="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs transition text-xs cursor-pointer"
         >
           {{ $t('common.save') }}
         </button>
-      </div>
-    </div>
-  </div>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
 </template>

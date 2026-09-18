@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Switch } from '@/components/ui/switch';
+
 export interface ModbusConfig {
   unitId: number;
   functionCode: string;
@@ -183,21 +185,13 @@ function updateField<K extends keyof ModbusConfig>(key: K, value: ModbusConfig[K
 
     <div class="flex flex-col items-start gap-1 shrink-0">
       <label class="text-xs font-semibold text-gray-600 pl-1">Raw</label>
-      <button
-        type="button"
-        @click="updateField('raw', !config.raw)"
-        :class="[
-          'w-9 h-5 rounded-full p-0.5 transition-colors relative cursor-pointer my-1.5',
-          config.raw ? 'bg-blue-600' : 'bg-gray-200'
-        ]"
-      >
-        <div
-          :class="[
-            'w-4 h-4 rounded-full bg-white shadow-xs transition-transform',
-            config.raw ? 'translate-x-4' : 'translate-x-0'
-          ]"
-        ></div>
-      </button>
+      <div class="h-8 flex items-center">
+        <Switch
+          :model-value="config.raw"
+          @update:model-value="(val: boolean) => updateField('raw', val)"
+          class="cursor-pointer"
+        />
+      </div>
     </div>
   </fieldset>
 </template>
