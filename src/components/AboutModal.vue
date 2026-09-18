@@ -116,8 +116,9 @@ async function handleApplyUpdate() {
 </script>
 
 <template>
-  <div v-if="show" class="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4 select-none">
-    <div role="dialog" aria-modal="true" class="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-sm overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+  <Transition name="modal">
+    <div v-if="show" class="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4 select-none">
+      <div role="dialog" aria-modal="true" class="modal-card bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-sm overflow-hidden">
       <!-- Modal Header -->
       <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50/50">
         <h3 class="font-semibold text-gray-900 text-base">{{ $t('updater.title') }}</h3>
@@ -219,4 +220,47 @@ async function handleApplyUpdate() {
       </div>
     </div>
   </div>
+</Transition>
 </template>
+
+<style scoped>
+.modal-enter-active,
+.modal-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+
+.modal-enter-active .modal-card {
+  animation: modal-zoom-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.modal-leave-active .modal-card {
+  animation: modal-zoom-out 0.15s cubic-bezier(0.4, 0, 1, 1);
+}
+
+@keyframes modal-zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes modal-zoom-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+</style>

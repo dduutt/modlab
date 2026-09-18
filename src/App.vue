@@ -846,13 +846,22 @@ function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
       @update-cell-pair="handleUpdateCellPair"
     />
 
-    <TrafficLog
-      v-if="activeTab && showLogPanel"
-      :logs="allLogs"
-      :devices="tabs.map(tab => ({ id: tab.id, title: tab.title }))"
-      @clear="device => tabs.forEach(tab => { if (!device || tab.id === device) tab.logs = []; })"
-      @close="showLogPanel = false"
-    />
+    <Transition
+      enter-active-class="transition-all duration-200 ease-out overflow-hidden"
+      enter-from-class="max-h-0 opacity-0"
+      enter-to-class="max-h-64 opacity-100"
+      leave-active-class="transition-all duration-150 ease-in overflow-hidden"
+      leave-from-class="max-h-64 opacity-100"
+      leave-to-class="max-h-0 opacity-0"
+    >
+      <TrafficLog
+        v-if="activeTab && showLogPanel"
+        :logs="allLogs"
+        :devices="tabs.map(tab => ({ id: tab.id, title: tab.title }))"
+        @clear="device => tabs.forEach(tab => { if (!device || tab.id === device) tab.logs = []; })"
+        @close="showLogPanel = false"
+      />
+    </Transition>
 
     <StatusBar
       v-if="activeTab"
