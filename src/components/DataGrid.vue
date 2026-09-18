@@ -213,14 +213,14 @@ function resetToZero() {
     </ContextMenuTrigger>
 
     <ContextMenuContent v-if="contextAddress !== null" class="w-40 text-xs">
-      <ContextMenuItem @click="copyValue" class="gap-2 cursor-pointer">
+      <ContextMenuItem @select="copyValue" class="gap-2 cursor-pointer">
         <Copy class="w-3.5 h-3.5 text-gray-500" />
         <span>{{ $t('common.copy') }}</span>
       </ContextMenuItem>
 
       <ContextMenuItem
         v-if="isCoil"
-        @click="toggleCoil"
+        @select="toggleCoil"
         :disabled="writable === false"
         class="gap-2 cursor-pointer"
       >
@@ -229,7 +229,7 @@ function resetToZero() {
       </ContextMenuItem>
 
       <ContextMenuItem
-        @click="triggerEdit"
+        @select="triggerEdit"
         :disabled="writable === false"
         class="gap-2 cursor-pointer"
       >
@@ -240,7 +240,7 @@ function resetToZero() {
       <ContextMenuSeparator />
 
       <ContextMenuItem
-        @click="resetToZero"
+        @select="resetToZero"
         :disabled="writable === false"
         variant="destructive"
         class="gap-2 cursor-pointer text-red-600 focus:text-red-600 focus:bg-red-50"
