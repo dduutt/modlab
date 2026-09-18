@@ -94,6 +94,10 @@ export default {
   updater: {
     title: '软件更新',
     currentVersion: '当前版本',
+    portable: '便携版',
+    installed: '安装版',
+    portableHint: '当前为免安装便携版，请下载新版本可执行文件直接替换使用。',
+    downloadPortable: '下载新版单文件 (.exe)',
     checkBtn: '检查更新',
     checking: '正在检查更新…',
     upToDate: '已是最新版本。',

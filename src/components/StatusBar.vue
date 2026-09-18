@@ -95,15 +95,12 @@ const conciseMessage = computed(() => {
           :title="$t('updater.title')"
         >
           <span>v{{ appVersion || '0.1.0' }}</span>
-          <!-- Green pulsing badge when update is available -->
+          <!-- Green solid badge when update is available -->
           <span
             v-if="hasUpdate"
-            class="relative flex h-2 w-2"
+            class="inline-flex rounded-full h-2 w-2 bg-emerald-500"
             :title="$t('updater.available') || 'New version available'"
-          >
-            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-          </span>
+          ></span>
         </button>
       </div>
     </div>

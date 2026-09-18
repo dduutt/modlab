@@ -94,6 +94,10 @@ export default {
   updater: {
     title: 'Software Update',
     currentVersion: 'Current Version',
+    portable: 'Portable',
+    installed: 'Installed',
+    portableHint: 'You are using the portable edition. Please download the new executable and replace it directly.',
+    downloadPortable: 'Download New Portable (.exe)',
     checkBtn: 'Check for Updates',
     checking: 'Checking for updates…',
     upToDate: 'You are on the latest version.',

@@ -720,6 +720,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
+            is_portable_installation,
             list_serial_ports_native,
             list_tcp_clients_native,
             connect_modbus_native,
@@ -730,6 +731,18 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+fn is_portable_installation() -> bool {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(dir) = exe_path.parent() {
+            if dir.join("uninstall.exe").exists() {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 #[tauri::command]
