@@ -108,7 +108,7 @@ function handleSave() {
 
 <template>
   <Dialog :open="show" @update:open="(val: boolean) => { if (!val) emit('close'); }">
-    <DialogContent class="max-w-xs rounded-xl p-5 select-none bg-white">
+    <DialogContent class="max-w-xs rounded-2xl p-5 select-none bg-white border border-gray-100 shadow-2xl" :show-close-button="false">
       <DialogHeader class="space-y-1">
         <DialogTitle class="text-sm font-semibold text-gray-900">
           {{ $t('dataGrid.editRegisterValue') }}
@@ -116,14 +116,14 @@ function handleSave() {
       </DialogHeader>
 
       <div class="space-y-2.5 text-xs py-2">
-        <div class="flex items-center justify-between bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-100">
+        <div class="flex items-center justify-between bg-gray-50 px-3 py-1.5 rounded-xl border border-gray-100">
           <span class="text-gray-500 font-medium">{{ $t('dataGrid.address') }}</span>
           <span class="font-mono font-bold text-gray-900">
             {{ address !== null ? (is32Bit ? `${address} - ${address + 1}` : address) : '-' }}
           </span>
         </div>
 
-        <div class="flex items-center justify-between bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-100">
+        <div class="flex items-center justify-between bg-gray-50 px-3 py-1.5 rounded-xl border border-gray-100">
           <span class="text-gray-500 font-medium">{{ $t('dataGrid.formatType') }}</span>
           <span class="font-mono text-blue-600 font-semibold">
             {{ dataType }} ({{ format }})
@@ -139,24 +139,24 @@ function handleSave() {
             @input="handleInputFilter"
             @keyup.enter="handleSave"
             type="text"
-            class="w-full px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-blue-500 font-mono text-sm font-semibold bg-white text-gray-900 shadow-2xs"
+            class="w-full px-3 py-1.5 border border-gray-200 rounded-xl outline-none focus:border-blue-500 font-mono text-sm font-semibold bg-white text-gray-900 shadow-2xs"
           />
           <p v-if="invalidValue" role="alert" class="mt-1.5 text-xs text-red-600 font-medium">{{ $t('dataGrid.invalidValue') }}</p>
         </div>
       </div>
 
-      <DialogFooter class="mt-2 gap-2">
+      <DialogFooter class="mt-3 gap-2 sm:justify-end">
         <button
           type="button"
           @click="emit('close')"
-          class="px-3.5 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 font-medium transition text-xs cursor-pointer"
+          class="px-4 py-1.5 rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50 font-medium transition text-xs cursor-pointer"
         >
           {{ $t('common.cancel') }}
         </button>
         <button
           type="button"
           @click="handleSave"
-          class="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs transition text-xs cursor-pointer"
+          class="px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs transition text-xs cursor-pointer"
         >
           {{ $t('common.save') }}
         </button>
