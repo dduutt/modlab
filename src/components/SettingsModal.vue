@@ -3,6 +3,13 @@ import { computed, onUnmounted, ref, watch } from 'vue';
 import { X } from '@lucide/vue';
 import { ModbusService } from '../services/modbusService';
 import { connectionError } from '../utils/configValidation';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 export interface ConnectionConfig {
   role: 'Slave' | 'Master';
@@ -228,24 +235,22 @@ function handleSave() {
 </script>
 
 <template>
-  <Transition name="modal">
-    <div v-if="show" class="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4 select-none">
-      <div
-        role="dialog"
-        aria-modal="true"
-        :aria-label="mode === 'create' ? $t('modal.addDevice') : $t('modal.connectionSettings')"
-        :data-can-save="canSave"
-        class="modal-card bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-md max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden transition-[height] duration-200"
-      >
-        <!-- Modal Header -->
-        <div class="flex shrink-0 items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50/50">
-          <h3 class="font-semibold text-gray-900 text-base">
-            {{ mode === 'create' ? $t('modal.addDevice') : $t('modal.connectionSettings') }}
-          </h3>
-          <button @click="emit('close')" class="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-200/60 rounded-lg transition cursor-pointer">
-            <X class="w-4 h-4" />
-          </button>
-        </div>
+  <Dialog :open="show" @update:open="(val: boolean) => { if (!val) emit('close'); }">
+    <DialogContent
+      :aria-label="mode === 'create' ? $t('modal.addDevice') : $t('modal.connectionSettings')"
+      :data-can-save="canSave"
+      class="max-w-md sm:max-w-md max-h-[calc(100vh-2rem)] flex flex-col p-0 overflow-hidden bg-white border border-gray-100 shadow-2xl rounded-2xl select-none"
+      :show-close-button="false"
+    >
+      <!-- Modal Header -->
+      <DialogHeader class="flex flex-row shrink-0 items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50/50">
+        <DialogTitle class="font-semibold text-gray-900 text-base">
+          {{ mode === 'create' ? $t('modal.addDevice') : $t('modal.connectionSettings') }}
+        </DialogTitle>
+        <button type="button" @click="emit('close')" class="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-200/60 rounded-lg transition cursor-pointer">
+          <X class="w-4 h-4" />
+        </button>
+      </DialogHeader>
 
         <!-- Modal Body -->
         <div class="flex-1 p-5 space-y-4 text-sm min-h-0 overflow-y-auto">
@@ -447,55 +452,12 @@ function handleSave() {
         </p>
 
         <!-- Footer Buttons -->
-        <div class="flex shrink-0 items-center justify-end gap-2 px-5 py-3.5 bg-gray-50/80 border-t border-gray-100">
-          <button @click="emit('close')" class="px-4 py-1.5 rounded-xl text-gray-600 hover:bg-gray-200/60 font-medium transition text-sm cursor-pointer">{{ $t('common.cancel') }}</button>
-          <button @click="handleSave" class="px-5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-md transition text-sm cursor-pointer active:scale-98">
+        <DialogFooter class="flex shrink-0 items-center justify-end gap-2 px-5 py-3.5 bg-gray-50/80 border-t border-gray-100">
+          <button type="button" @click="emit('close')" class="px-4 py-1.5 rounded-xl text-gray-600 hover:bg-gray-200/60 font-medium transition text-sm cursor-pointer">{{ $t('common.cancel') }}</button>
+          <button type="button" @click="handleSave" class="px-5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-md transition text-sm cursor-pointer active:scale-98">
             {{ mode === 'create' ? $t('modal.createDevice') : $t('common.save') }}
           </button>
-        </div>
-      </div>
-    </div>
-  </Transition>
+        </DialogFooter>
+    </DialogContent>
+  </Dialog>
 </template>
-
-<style scoped>
-.modal-enter-active,
-.modal-leave-active {
-  transition: opacity 0.2s ease;
-}
-
-.modal-enter-from,
-.modal-leave-to {
-  opacity: 0;
-}
-
-.modal-enter-active .modal-card {
-  animation: modal-zoom-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.modal-leave-active .modal-card {
-  animation: modal-zoom-out 0.15s cubic-bezier(0.4, 0, 1, 1);
-}
-
-@keyframes modal-zoom-in {
-  from {
-    opacity: 0;
-    transform: scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@keyframes modal-zoom-out {
-  from {
-    opacity: 1;
-    transform: scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-}
-</style>
