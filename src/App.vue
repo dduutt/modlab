@@ -319,9 +319,11 @@ watch(() => tabs.value.map(tab => ({ id: tab.id, unitId: tab.config.unitId, func
   for (const next of current) {
     const before = previous.find(tab => tab.id === next.id);
     if (before && (before.unitId !== next.unitId || before.functionCode !== next.functionCode)) {
-      const tab = tabs.value.find(tab => tab.id === next.id)!;
-      tab.values = {};
-      tab.connectionVersion = (tab.connectionVersion ?? 0) + 1;
+      const tab = tabs.value.find(tab => tab.id === next.id);
+      if (tab) {
+        tab.values = {};
+        tab.connectionVersion = (tab.connectionVersion ?? 0) + 1;
+      }
     }
   }
 });
