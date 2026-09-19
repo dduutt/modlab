@@ -137,3 +137,62 @@ for (const scenario of cases.filter(item => item.values)) {
     }
   }
 }
+
+test('Slave disconnected supports single write and updates values', async () => {
+  const tab = createTab('Slave-Tab');
+  tab.connection.role = 'Slave';
+  tab.connected = false;
+  let calledRole;
+  const mockWrite = async (sessionId, addr, val, fc, unit, timeout, retries, role) => {
+    calledRole = role;
+  };
+  const service = { writeRegister: mockWrite };
+  const handlers = createHandlers({ value: tab }, service, () => {}, () => {}, () => ({}), { error() {} });
+  await handlers.handleUpdateCell(10, 888);
+  assert.equal(calledRole, 'Slave');
+  assert.equal(tab.values[10], 888);
+  assert.equal(tab.statusType, 'success');
+});
+
+test('Slave disconnected supports pair write and updates values', async () => {
+  const tab = createTab('Slave-Tab');
+  tab.connection.role = 'Slave';
+  tab.connected = false;
+  let calledRole;
+  const mockWrite = async (sessionId, start, values, fc, unit, timeout, retries, role) => {
+    calledRole = role;
+  };
+  const service = { writeRegisters: mockWrite };
+  const handlers = createHandlers({ value: tab }, service, () => {}, () => {}, () => ({}), { error() {} });
+  await handlers.handleUpdateCellPair(10, 111, 11, 222);
+  assert.equal(calledRole, 'Slave');
+  assert.equal(tab.values[10], 111);
+  assert.equal(tab.values[11], 222);
+  assert.equal(tab.statusType, 'success');
+});
+
+test('Slave disconnected supports random fill and updates values', async () => {
+  const tab = createTab('Slave-Tab');
+  tab.connection.role = 'Slave';
+  tab.connected = false;
+  const mockWrite = async () => {};
+  const service = { writeRegister: mockWrite };
+  const handlers = createHandlers({ value: tab }, service, () => {}, () => {}, () => ({ 10: 99, 11: 100 }), { error() {} });
+  await handlers.handleFillRandom();
+  assert.equal(tab.values[10], 99);
+  assert.equal(tab.values[11], 100);
+  assert.equal(tab.statusType, 'success');
+});
+
+test('Master disconnected blocks single write without calling service', async () => {
+  const tab = createTab('Master-Tab');
+  tab.connection.role = 'Master';
+  tab.connected = false;
+  let called = false;
+  const mockWrite = async () => { called = true; };
+  const service = { writeRegister: mockWrite };
+  const handlers = createHandlers({ value: tab }, service, () => {}, () => {}, () => ({}), { error() {} });
+  await handlers.handleUpdateCell(10, 888);
+  assert.equal(called, false);
+  assert.deepEqual(tab.values, {});
+});

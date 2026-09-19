@@ -611,13 +611,18 @@ async fn write_register_native(
     unit_id: u8,
     timeout_ms: u32,
     retries: u8,
+    role: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let operation = connection_operation(&state, &session_id)?;
     let _operation = operation.lock().await;
     validate_request(&function_code, address, 1)?;
     validate_communication_settings(timeout_ms, retries)?;
-    let memory = connected_memory(&state, &session_id)?;
+    let memory = if role.as_deref() == Some("Slave") {
+        session_memory(&state, &session_id)?
+    } else {
+        connected_memory(&state, &session_id)?
+    };
 
     if let Some(client) = cached_client(&state, &session_id)? {
         if client.closing.load(Ordering::SeqCst) {
@@ -662,11 +667,16 @@ async fn write_registers_native(
     unit_id: u8,
     timeout_ms: u32,
     retries: u8,
+    role: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let operation = connection_operation(&state, &session_id)?;
     let _operation = operation.lock().await;
-    let memory = connected_memory(&state, &session_id)?;
+    let memory = if role.as_deref() == Some("Slave") {
+        session_memory(&state, &session_id)?
+    } else {
+        connected_memory(&state, &session_id)?
+    };
     if values.is_empty() {
         return Ok(());
     }

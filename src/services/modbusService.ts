@@ -47,9 +47,10 @@ export class ModbusService {
     unitId: number,
     timeoutMs: number,
     retries: number,
+    role?: string,
   ): Promise<void> {
     await invoke('write_register_native', {
-      sessionId, address, value, functionCode, unitId, timeoutMs, retries,
+      sessionId, address, value, functionCode, unitId, timeoutMs, retries, role,
     });
   }
 
@@ -61,9 +62,10 @@ export class ModbusService {
     unitId: number,
     timeoutMs: number,
     retries: number,
+    role?: string,
   ): Promise<void> {
     await invoke('write_registers_native', {
-      sessionId, start, values, functionCode, unitId, timeoutMs, retries,
+      sessionId, start, values, functionCode, unitId, timeoutMs, retries, role,
     });
   }
 }

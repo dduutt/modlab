@@ -301,6 +301,7 @@ function writeTabRegister(tab: SessionTab, address: number, value: number) {
     tab.config.unitId,
     tab.connection.timeoutMs,
     tab.connection.retries,
+    tab.connection.role,
   );
 }
 
@@ -308,7 +309,7 @@ function captureTabRequest(tab: SessionTab) {
   const connection = tab.connection;
   const version = tab.connectionVersion;
   const { unitId, functionCode, startAddress, count } = tab.config;
-  return () => tab.connected && !tab.busy && tab.connection === connection
+  return () => (tab.connection.role === 'Slave' || tab.connected) && !tab.busy && tab.connection === connection
     && tab.connectionVersion === version && tab.config.unitId === unitId
     && tab.config.functionCode === functionCode && tab.config.startAddress === startAddress
     && tab.config.count === count;
@@ -655,7 +656,7 @@ async function handleToggleConnect() {
 async function handleFillRandom() {
   const operationStarted = Date.now();
   const tab = activeTab.value;
-  if (!tab || !tab.connected || tab.busy) return;
+  if (!tab || (!tab.connected && tab.connection.role !== 'Slave') || tab.busy) return;
   const isCurrent = captureTabRequest(tab);
   try {
     broadcastLog(tab, 'TX', `Random Fill Req`, `Start: ${tab.config.startAddress}, Count: ${tab.config.count}`);
@@ -771,7 +772,8 @@ async function handleUpdateCellPair(address1: number, value1: number, address2: 
       tab.config.functionCode,
       tab.config.unitId,
       tab.connection.timeoutMs,
-      tab.connection.retries
+      tab.connection.retries,
+      tab.connection.role,
     );
     if (!isCurrent()) return;
     tab.values[address1] = value1;

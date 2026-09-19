@@ -95,7 +95,7 @@ const emit = defineEmits<{
         <!-- Random Action Button -->
         <button
           @click="emit('fill-random')"
-          :disabled="!connected || loading"
+          :disabled="loading"
           class="flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition cursor-pointer border border-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
           :title="$t('common.randomHint')"
         >
