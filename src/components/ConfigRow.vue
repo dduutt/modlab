@@ -187,7 +187,7 @@ function updateField<K extends keyof ModbusConfig>(key: K, value: ModbusConfig[K
       <label class="text-xs font-semibold text-gray-600 pl-1">Raw</label>
       <div class="h-8 flex items-center">
         <Switch
-          :model-value="config.raw"
+          :model-value="!!config.raw"
           @update:model-value="(val: boolean) => updateField('raw', val)"
           class="cursor-pointer"
         />

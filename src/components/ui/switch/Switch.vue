@@ -27,16 +27,21 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
   <SwitchRoot
     v-slot="slotProps"
     data-slot="switch"
-    :data-size="size"
     v-bind="forwarded"
     :class="cn(
-      'data-checked:bg-blue-600 data-unchecked:bg-gray-200 focus-visible:ring-2 focus-visible:ring-blue-400 shrink-0 rounded-full border-2 border-transparent data-[size=default]:h-5 data-[size=default]:w-9 data-[size=sm]:h-3.5 data-[size=sm]:w-6 peer group/switch relative inline-flex items-center transition-colors outline-none cursor-pointer data-disabled:cursor-not-allowed data-disabled:opacity-50',
+      'peer inline-flex shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-blue-400 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-blue-600 data-[state=unchecked]:bg-gray-200',
+      size === 'sm' ? 'h-4 w-7' : 'h-5 w-9',
       props.class,
     )"
   >
     <SwitchThumb
       data-slot="switch-thumb"
-      class="bg-white rounded-full group-data-[size=default]/switch:size-4 group-data-[size=sm]/switch:size-3 group-data-[size=default]/switch:data-checked:translate-x-4 group-data-[size=sm]/switch:data-checked:translate-x-2.5 group-data-[size=default]/switch:data-unchecked:translate-x-0 group-data-[size=sm]/switch:data-unchecked:translate-x-0 pointer-events-none block ring-0 shadow-xs transition-transform"
+      :class="cn(
+        'pointer-events-none block rounded-full bg-white shadow-xs ring-0 transition-transform',
+        size === 'sm'
+          ? 'h-3 w-3 data-[state=checked]:translate-x-3 data-[state=unchecked]:translate-x-0'
+          : 'h-4 w-4 data-[state=checked]:translate-x-4 data-[state=unchecked]:translate-x-0',
+      )"
     >
       <slot name="thumb" v-bind="slotProps" />
     </SwitchThumb>

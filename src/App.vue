@@ -163,16 +163,16 @@ function loadSavedState(): { loadedTabs: SessionTab[]; savedActiveId: string } {
             retries: 3,
           },
           connected: false, // ALWAYS unconnected on startup!
-          config: t.config || {
-            unitId: 1,
-            functionCode: '0x03',
-            startAddress: 0,
-            count: 40,
-            dataType: 'Int16',
-            format: 'Dec',
-            byteOrder: 'ABCD',
-            interval: 1000,
-            raw: false,
+          config: {
+            unitId: t.config?.unitId ?? 1,
+            functionCode: t.config?.functionCode ?? '0x03',
+            startAddress: t.config?.startAddress ?? 0,
+            count: t.config?.count ?? 40,
+            dataType: t.config?.dataType ?? 'Int16',
+            format: t.config?.format ?? 'Dec',
+            byteOrder: t.config?.byteOrder ?? 'ABCD',
+            interval: t.config?.interval ?? 1000,
+            raw: Boolean(t.config?.raw),
           },
           values: {}, // ALWAYS empty values on startup!
           logs: [],   // ALWAYS empty logs on startup!
