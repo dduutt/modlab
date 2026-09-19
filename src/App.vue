@@ -511,6 +511,8 @@ watch(
         if (!realTab.connected) {
           if (realTab.isPolling) realTab.isPolling = false;
           if (realTab.autoIncrement) realTab.autoIncrement = false;
+          pollingInFlight.delete(realTab.id);
+          incrementInFlight.delete(realTab.id);
         }
         updateTabTimers(realTab);
       }

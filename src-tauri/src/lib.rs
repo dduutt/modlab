@@ -76,7 +76,7 @@ impl ClientConnection {
         }
         if slot.is_none() {
             // The outer request loop owns the retry budget. Reconnect once per attempt.
-            *slot = Some(
+            *slot = Some(if self.config.protocol == "TCP" {
                 connect_tcp_logged(
                     &self.config.ip,
                     self.config.port,
@@ -85,8 +85,14 @@ impl ClientConnection {
                     0,
                     self.wire_sink.clone(),
                 )
-                .await?,
-            );
+                .await?
+            } else {
+                let sink = self
+                    .wire_sink
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(|_, _, _| {}));
+                connect_rtu_logged(&self.config, unit_id, sink)?
+            });
         }
         let context = slot.as_mut().ok_or("Modbus connection is unavailable")?;
         let operation = async {
@@ -125,9 +131,9 @@ impl ClientConnection {
                 Ok(result) => result,
                 Err(_) => Err(format!("request timed out after {timeout_ms}ms")),
             };
-        if result.is_err() && self.config.protocol == "TCP" {
+        if result.is_err() {
             // Drop even on the final failed attempt, so the next poll starts clean.
-            // Late replies belong to the old socket and cannot poison the next request.
+            // Late replies belong to the old connection and cannot poison the next request.
             *slot = None;
         }
         result
@@ -557,8 +563,6 @@ async fn read_registers_native(
     retries: u8,
     state: tauri::State<'_, AppState>,
 ) -> Result<HashMap<u16, u16>, String> {
-    let operation = connection_operation(&state, &session_id)?;
-    let _operation = operation.lock().await;
     validate_request(&function_code, start, count)?;
     validate_communication_settings(timeout_ms, retries)?;
     let memory = connected_memory(&state, &session_id)?;
@@ -614,8 +618,6 @@ async fn write_register_native(
     role: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    let operation = connection_operation(&state, &session_id)?;
-    let _operation = operation.lock().await;
     validate_request(&function_code, address, 1)?;
     validate_communication_settings(timeout_ms, retries)?;
     let memory = if role.as_deref() == Some("Slave") {
@@ -670,8 +672,6 @@ async fn write_registers_native(
     role: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    let operation = connection_operation(&state, &session_id)?;
-    let _operation = operation.lock().await;
     let memory = if role.as_deref() == Some("Slave") {
         session_memory(&state, &session_id)?
     } else {

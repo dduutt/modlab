@@ -464,34 +464,20 @@ impl Service for TcpSlaveService {
                 Ok(Response::WriteSingleRegister(addr, value))
             }
             WriteMultipleCoils(start, values) => {
+                if values.is_empty() || u32::from(start) + values.len() as u32 > 65_536 {
+                    return ready(Ok(exception_response(function_code, 0x02)));
+                }
                 for (offset, value) in values.iter().copied().enumerate() {
-                    let addr = start
-                        .checked_add(offset as u16)
-                        .ok_or_else(|| "Coil address range exceeds 65535".to_string());
-                    if let Ok(addr) = addr {
-                        memory.set_coil_value(addr, value);
-                    } else {
-                        return ready(Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "Coil address range exceeds 65535",
-                        )));
-                    }
+                    memory.set_coil_value(start + offset as u16, value);
                 }
                 Ok(Response::WriteMultipleCoils(start, values.len() as u16))
             }
             WriteMultipleRegisters(start, values) => {
+                if values.is_empty() || u32::from(start) + values.len() as u32 > 65_536 {
+                    return ready(Ok(exception_response(function_code, 0x02)));
+                }
                 for (offset, value) in values.iter().copied().enumerate() {
-                    let addr = start
-                        .checked_add(offset as u16)
-                        .ok_or_else(|| "Register address range exceeds 65535".to_string());
-                    if let Ok(addr) = addr {
-                        memory.set_holding(addr, value);
-                    } else {
-                        return ready(Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "Register address range exceeds 65535",
-                        )));
-                    }
+                    memory.set_holding(start + offset as u16, value);
                 }
                 Ok(Response::WriteMultipleRegisters(start, values.len() as u16))
             }
