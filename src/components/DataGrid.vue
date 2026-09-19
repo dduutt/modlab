@@ -114,7 +114,12 @@ function handleCellRightClick(addr: number) {
 
 <template>
   <div class="flex-1 p-4 overflow-auto bg-gray-50/50 relative">
-    <div class="bg-white border border-gray-200 rounded-xl shadow-2xs overflow-hidden">
+    <div
+      :class="[
+        'bg-white border border-gray-200 rounded-xl shadow-2xs overflow-hidden transition-all duration-200',
+        !props.writable ? 'opacity-60 grayscale-[50%] select-none cursor-not-allowed' : ''
+      ]"
+    >
       <Table class="w-full text-sm text-center border-collapse">
         <TableHeader>
           <TableRow class="bg-gray-50/80 border-b border-gray-200 text-gray-600 font-medium hover:bg-gray-50/80">
@@ -135,7 +140,8 @@ function handleCellRightClick(addr: number) {
             v-for="(rowAddr, index) in rows"
             :key="rowAddr"
             :class="[
-              'transition-colors hover:bg-blue-50/40 border-b border-gray-200',
+              'transition-colors border-b border-gray-200',
+              props.writable ? 'hover:bg-blue-50/40' : '',
               index % 2 === 1 ? 'bg-slate-50/60' : 'bg-white'
             ]"
           >
@@ -156,8 +162,8 @@ function handleCellRightClick(addr: number) {
                 v-if="isValidAddress(rowAddr + colOffset - 1)"
                 @contextmenu.prevent="props.writable ? handleCellRightClick(rowAddr + colOffset - 1) : null"
                 :class="[
-                  'w-full h-full py-2.5 px-2 text-gray-800 transition-colors flex flex-col items-center justify-center leading-tight cursor-default',
-                  props.writable ? 'hover:bg-blue-100/40' : ''
+                  'w-full h-full py-2.5 px-2 text-gray-800 transition-colors flex flex-col items-center justify-center leading-tight',
+                  props.writable ? 'hover:bg-blue-100/40 cursor-default' : 'cursor-not-allowed'
                 ]"
               >
                 <span>{{ getPrimaryCellText(rowAddr + colOffset - 1) }}</span>
