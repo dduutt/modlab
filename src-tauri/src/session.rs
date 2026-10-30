@@ -524,7 +524,7 @@ impl SessionActor {
                 }
 
                 if let Some(cfg) = &self.config {
-                    if cfg.function_code == "0x02" || cfg.function_code == "0x04" {
+                    if is_readonly_function(&cfg.function_code) {
                         let _ = self
                             .event_sender
                             .send(SessionEvent::PollError(format!("Function code {} is read-only", cfg.function_code)))
@@ -545,7 +545,7 @@ impl SessionActor {
                 }
 
                 if let Some(ctx) = &mut self.client {
-                    let is_coil = self.config.as_ref().map(|c| c.function_code == "0x01" || c.function_code == "0x02").unwrap_or(false);
+                    let is_coil = self.config.as_ref().map(|c| is_coil_function(&c.function_code)).unwrap_or(false);
                     let write_res = if is_coil {
                         ctx.write_single_coil(payload.address, payload.value != 0).await
                     } else {
@@ -586,7 +586,7 @@ impl SessionActor {
                 }
 
                 if let Some(cfg) = &self.config {
-                    if cfg.function_code == "0x02" || cfg.function_code == "0x04" {
+                    if is_readonly_function(&cfg.function_code) {
                         let _ = self
                             .event_sender
                             .send(SessionEvent::PollError(format!("Function code {} is read-only", cfg.function_code)))
@@ -603,8 +603,7 @@ impl SessionActor {
                         }
                         let _ = self.event_sender.send(SessionEvent::DataUpdated(batch)).await;
                     } else if let Some(ctx) = &mut self.client {
-                        let is_coil = cfg.function_code == "0x01" || cfg.function_code == "0x02";
-                        if is_coil {
+                        if is_coil_function(&cfg.function_code) {
                             for (addr, val) in &batch {
                                 let _ = ctx.write_single_coil(*addr, *val != 0).await;
                             }
@@ -637,8 +636,7 @@ impl SessionActor {
                     let _ = self.event_sender.send(SessionEvent::PollError("Cannot start auto-increment while disconnected".into())).await;
                     return;
                 }
-                let fc = config.function_code.trim();
-                if fc == "0x02" || fc == "0x04" || fc == "2" || fc == "4" || fc == "discrete_inputs" || fc == "input_registers" {
+                if is_readonly_function(&config.function_code) {
                     let _ = self.event_sender.send(SessionEvent::PollError(format!("Function code {} is read-only", config.function_code))).await;
                     return;
                 }
@@ -668,8 +666,7 @@ impl SessionActor {
                     let _ = self.event_sender.send(SessionEvent::PollError("Random fill is only supported in Slave mode".into())).await;
                     return;
                 }
-                let fc = config.function_code.trim();
-                if fc == "0x02" || fc == "0x04" || fc == "2" || fc == "4" || fc == "discrete_inputs" || fc == "input_registers" {
+                if is_readonly_function(&config.function_code) {
                     let _ = self.event_sender.send(SessionEvent::PollError(format!("Function code {} is read-only", config.function_code))).await;
                     return;
                 }
@@ -685,16 +682,8 @@ impl SessionActor {
             _ => return,
         };
 
-        let fc_lower = config.function_code.trim().to_lowercase();
-        let fc_normalized = match fc_lower.as_str() {
-            "0x01" | "1" | "01" | "coils" => "0x01",
-            "0x02" | "2" | "02" | "discrete_inputs" => "0x02",
-            "0x03" | "3" | "03" | "holding" | "holding_registers" => "0x03",
-            "0x04" | "4" | "04" | "input_registers" => "0x04",
-            other => other,
-        };
-
-        let is_coil = fc_normalized == "0x01" || fc_normalized == "0x02";
+        let fc_normalized = config.function_code.trim();
+        let is_coil = is_coil_function(fc_normalized);
         let max_count = if is_coil { 2000 } else { 125 };
 
         if config.count == 0
@@ -845,7 +834,7 @@ impl SessionActor {
                         "Float32" => {
                             let val = f32::from_be_bytes(swapped);
                             let next = if val.is_nan() || val.is_infinite() { 1.0 } else { val + 1.0 };
-                            let out_bytes = unswap_bytes_32(next.to_be_bytes(), &config.byte_order);
+                            let out_bytes = swap_bytes_32(next.to_be_bytes(), &config.byte_order);
                             (
                                 ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
                                 ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
@@ -854,7 +843,7 @@ impl SessionActor {
                         "Int32" => {
                             let val = i32::from_be_bytes(swapped);
                             let next = val.wrapping_add(1);
-                            let out_bytes = unswap_bytes_32(next.to_be_bytes(), &config.byte_order);
+                            let out_bytes = swap_bytes_32(next.to_be_bytes(), &config.byte_order);
                             (
                                 ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
                                 ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
@@ -863,7 +852,7 @@ impl SessionActor {
                         _ => {
                             let val = u32::from_be_bytes(swapped);
                             let next = val.wrapping_add(1);
-                            let out_bytes = unswap_bytes_32(next.to_be_bytes(), &config.byte_order);
+                            let out_bytes = swap_bytes_32(next.to_be_bytes(), &config.byte_order);
                             (
                                 ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
                                 ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
@@ -926,7 +915,7 @@ impl SessionActor {
                         "Float32" => {
                             let val = rng.gen_f32(-5000.0, 5000.0);
                             let rounded = (val * 100.0).round() / 100.0;
-                            let out_bytes = unswap_bytes_32(rounded.to_be_bytes(), &config.byte_order);
+                            let out_bytes = swap_bytes_32(rounded.to_be_bytes(), &config.byte_order);
                             (
                                 ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
                                 ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
@@ -934,7 +923,7 @@ impl SessionActor {
                         }
                         "Int32" => {
                             let val = rng.gen_i32(-100000, 100000);
-                            let out_bytes = unswap_bytes_32(val.to_be_bytes(), &config.byte_order);
+                            let out_bytes = swap_bytes_32(val.to_be_bytes(), &config.byte_order);
                             (
                                 ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
                                 ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
@@ -942,7 +931,7 @@ impl SessionActor {
                         }
                         _ => {
                             let val = rng.gen_u32(200000);
-                            let out_bytes = unswap_bytes_32(val.to_be_bytes(), &config.byte_order);
+                            let out_bytes = swap_bytes_32(val.to_be_bytes(), &config.byte_order);
                             (
                                 ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
                                 ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
@@ -969,26 +958,23 @@ impl SessionActor {
     }
 }
 
+#[inline]
 fn is_coil_function(fc: &str) -> bool {
-    let lower = fc.trim().to_lowercase();
-    matches!(lower.as_str(), "0x01" | "0x02" | "1" | "2" | "coils" | "discrete_inputs")
+    matches!(fc.trim(), "0x01" | "0x02")
 }
 
+#[inline]
+fn is_readonly_function(fc: &str) -> bool {
+    matches!(fc.trim(), "0x02" | "0x04")
+}
+
+#[inline]
 fn is_32bit_datatype(dt: &str) -> bool {
     matches!(dt, "Float32" | "Int32" | "UInt32")
 }
 
+#[inline]
 fn swap_bytes_32(bytes: [u8; 4], byte_order: &str) -> [u8; 4] {
-    let [a, b, c, d] = bytes;
-    match byte_order {
-        "CDAB" => [c, d, a, b],
-        "BADC" => [b, a, d, c],
-        "DCBA" => [d, c, b, a],
-        _ => [a, b, c, d],
-    }
-}
-
-fn unswap_bytes_32(bytes: [u8; 4], byte_order: &str) -> [u8; 4] {
     let [a, b, c, d] = bytes;
     match byte_order {
         "CDAB" => [c, d, a, b],

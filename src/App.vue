@@ -13,7 +13,7 @@ import TrafficLog from './components/TrafficLog.vue';
 import ConfirmModal from './components/ConfirmModal.vue';
 import AboutModal from './components/AboutModal.vue';
 import { UpdateService } from './services/updateService';
-import { useSessionStore } from './stores/sessionStore';
+import { useSessionStore, createDefaultConnection } from './stores/sessionStore';
 
 const store = useSessionStore();
 const { locale } = useI18n();
@@ -35,19 +35,7 @@ const tabToCloseId = ref<string | null>(null);
 
 const activeTab = computed(() => store.activeTab);
 
-const newDeviceDefaultConfig = computed<ConnectionConfig>(() => ({
-  role: 'Slave',
-  protocol: 'TCP',
-  ip: '127.0.0.1',
-  port: 502,
-  serialPort: 'COM1',
-  baudRate: 9600,
-  dataBits: 8,
-  stopBits: 1,
-  parity: 'None',
-  timeoutMs: 1000,
-  retries: 3,
-}));
+const newDeviceDefaultConfig = computed<ConnectionConfig>(() => createDefaultConnection('Slave'));
 
 const isGridWritable = computed(() => {
   const tab = activeTab.value;

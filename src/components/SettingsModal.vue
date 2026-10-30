@@ -99,6 +99,14 @@ const isDuplicateName = computed(() => {
   return names.some(n => n.toLowerCase() === trimmed && n.toLowerCase() !== current);
 });
 
+const ERROR_FIELD_MAP: Record<string, string> = {
+  'modal.invalidIp': 'ip',
+  'modal.invalidPort': 'port',
+  'modal.invalidTimeout': 'timeoutMs',
+  'modal.invalidRetries': 'retries',
+  'modal.invalidSerial': 'serialPort',
+};
+
 function validateAll(): { error: string; field: string } | null {
   const trimmedName = deviceName.value.trim();
   if (!trimmedName) {
@@ -107,33 +115,13 @@ function validateAll(): { error: string; field: string } | null {
   if (isDuplicateName.value) {
     return { error: 'modal.duplicateName', field: 'name' };
   }
-
-  if (form.value.protocol === 'TCP') {
-    const ip = form.value.ip.trim();
-    const ipv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) && ip.split('.').every(part => Number(part) <= 255 && (part === '0' || !part.startsWith('0')));
-    let ipv6 = false;
-    if (ip.startsWith('[') && ip.endsWith(']')) {
-      try { ipv6 = new URL(`http://${ip}`).hostname.startsWith('['); } catch { /* invalid */ }
-    }
-    if (!ipv4 && !ipv6) {
-      return { error: 'modal.invalidIp', field: 'ip' };
-    }
-    if (!Number.isInteger(form.value.port) || form.value.port < 1 || form.value.port > 65535) {
-      return { error: 'modal.invalidPort', field: 'port' };
-    }
-  } else {
-    if (portsLoading.value || !!portsError.value || !form.value.serialPort || !serialPorts.value.includes(form.value.serialPort)) {
-      return { error: portsError.value ? 'modal.serialPortsError' : 'modal.selectSerialPort', field: 'serialPort' };
-    }
+  if (form.value.protocol === 'RTU' && (portsLoading.value || !!portsError.value || !form.value.serialPort || !serialPorts.value.includes(form.value.serialPort))) {
+    return { error: portsError.value ? 'modal.serialPortsError' : 'modal.selectSerialPort', field: 'serialPort' };
   }
-
-  if (!Number.isInteger(form.value.timeoutMs) || form.value.timeoutMs < 100 || form.value.timeoutMs > 10000) {
-    return { error: 'modal.invalidTimeout', field: 'timeoutMs' };
+  const err = connectionError(form.value);
+  if (err) {
+    return { error: err, field: ERROR_FIELD_MAP[err] || 'ip' };
   }
-  if (!Number.isInteger(form.value.retries) || form.value.retries < 0 || form.value.retries > 10) {
-    return { error: 'modal.invalidRetries', field: 'retries' };
-  }
-
   return null;
 }
 

@@ -1,4 +1,4 @@
-// Swaps 4 bytes based on Modbus byte order
+// Swaps 4 bytes based on Modbus byte order (all 4-byte Modbus permutations are self-inverse)
 function swapBytes32(bytes: Uint8Array, byteOrder: string = 'ABCD'): Uint8Array {
   const [a, b, c, d] = bytes;
   switch (byteOrder) {
@@ -7,17 +7,6 @@ function swapBytes32(bytes: Uint8Array, byteOrder: string = 'ABCD'): Uint8Array 
     case 'DCBA': return new Uint8Array([d, c, b, a]); // Big-Endian Byte Swap
     case 'ABCD':
     default: return new Uint8Array([a, b, c, d]);     // Big-Endian
-  }
-}
-
-function unswapBytes32(bytes: Uint8Array, byteOrder: string = 'ABCD'): Uint8Array {
-  const [a, b, c, d] = bytes;
-  switch (byteOrder) {
-    case 'CDAB': return new Uint8Array([c, d, a, b]);
-    case 'BADC': return new Uint8Array([b, a, d, c]);
-    case 'DCBA': return new Uint8Array([d, c, b, a]);
-    case 'ABCD':
-    default: return new Uint8Array([a, b, c, d]);
   }
 }
 
@@ -112,7 +101,7 @@ export function parseFormattedRegisterValue(
     }
 
     const bytes = new Uint8Array(buffer);
-    const unswapped = unswapBytes32(bytes, byteOrder);
+    const unswapped = swapBytes32(bytes, byteOrder);
     const word1 = (unswapped[0] << 8) | unswapped[1];
     const word2 = (unswapped[2] << 8) | unswapped[3];
 
@@ -171,63 +160,6 @@ export function generateRandomRegisters(
 
   for (let addr = start; addr < start + count; addr++) {
     result[addr] = Math.floor(Math.random() * 1000);
-  }
-
-  return result;
-}
-
-export function generateIncrementRegisters(
-  start: number,
-  count: number,
-  dataType: string = 'Int16',
-  byteOrder: string = 'ABCD',
-  functionCode?: string
-): Record<number, number> {
-  const result: Record<number, number> = {};
-  const isCoil = functionCode === '0x01' || functionCode === '0x02';
-
-  if (isCoil) {
-    let val = 1;
-    for (let addr = start; addr < start + count; addr++) {
-      result[addr] = val;
-      val = val === 1 ? 0 : 1;
-    }
-    return result;
-  }
-
-  if (dataType === 'Float32') {
-    let floatVal = 100.5;
-    for (let addr = start; addr < start + count; addr += 2) {
-      const parsed = parseFormattedRegisterValue(floatVal.toFixed(2), 'Dec', 'Float32', byteOrder);
-      if (typeof parsed === 'object') {
-        result[addr] = parsed.word1;
-        if (addr + 1 < start + count) {
-          result[addr + 1] = parsed.word2;
-        }
-      }
-      floatVal += 100.5;
-    }
-    return result;
-  }
-
-  if (dataType === 'Int32' || dataType === 'UInt32') {
-    let intVal = 1000;
-    for (let addr = start; addr < start + count; addr += 2) {
-      const parsed = parseFormattedRegisterValue(intVal.toString(), 'Dec', dataType, byteOrder);
-      if (typeof parsed === 'object') {
-        result[addr] = parsed.word1;
-        if (addr + 1 < start + count) {
-          result[addr + 1] = parsed.word2;
-        }
-      }
-      intVal += 1000;
-    }
-    return result;
-  }
-
-  let stepVal = 1;
-  for (let addr = start; addr < start + count; addr++) {
-    result[addr] = stepVal++;
   }
 
   return result;

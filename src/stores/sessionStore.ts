@@ -12,8 +12,6 @@ export interface SessionTab {
   connection: ConnectionConfig;
   connected: boolean;
   busy?: boolean;
-  connectionVersion?: number;
-  valueVersion?: number;
   config: ModbusConfig;
   values: Record<number, number>;
   logs: LogEntry[];
@@ -25,36 +23,44 @@ export interface SessionTab {
 
 const STORAGE_KEY = 'modlab_session_configs_v1';
 
+export function createDefaultConnection(role: 'Slave' | 'Master' = 'Slave'): ConnectionConfig {
+  return {
+    role,
+    protocol: 'TCP',
+    ip: '127.0.0.1',
+    port: 502,
+    serialPort: 'COM1',
+    baudRate: 9600,
+    dataBits: 8,
+    stopBits: 1,
+    parity: 'None',
+    timeoutMs: 1000,
+    retries: 3,
+  };
+}
+
+export function createDefaultModbusConfig(): ModbusConfig {
+  return {
+    unitId: 1,
+    functionCode: '0x03',
+    startAddress: 0,
+    count: 40,
+    dataType: 'Int16',
+    format: 'Dec',
+    byteOrder: 'ABCD',
+    interval: 1000,
+    raw: false,
+  };
+}
+
 function getDefaultTabs(): SessionTab[] {
   return [
     {
       id: 'slave-1',
       title: 'Slave 1',
-      connection: {
-        role: 'Slave',
-        protocol: 'TCP',
-        ip: '127.0.0.1',
-        port: 502,
-        serialPort: 'COM1',
-        baudRate: 9600,
-        dataBits: 8,
-        stopBits: 1,
-        parity: 'None',
-        timeoutMs: 1000,
-        retries: 3,
-      },
+      connection: createDefaultConnection('Slave'),
       connected: false,
-      config: {
-        unitId: 1,
-        functionCode: '0x03',
-        startAddress: 0,
-        count: 40,
-        dataType: 'Int16',
-        format: 'Dec',
-        byteOrder: 'ABCD',
-        interval: 1000,
-        raw: false,
-      },
+      config: createDefaultModbusConfig(),
       values: {},
       logs: [],
       statusMessage: '[Slave 1] Disconnected.',
@@ -72,29 +78,11 @@ function loadSavedState(): { loadedTabs: SessionTab[]; savedActiveId: string } {
         const loadedTabs: SessionTab[] = parsed.tabs.map((t: any) => ({
           id: t.id || `tab-${Math.random().toString(36).slice(2)}`,
           title: t.title || 'Device',
-          connection: t.connection || {
-            role: 'Slave',
-            protocol: 'TCP',
-            ip: '127.0.0.1',
-            port: 502,
-            serialPort: 'COM1',
-            baudRate: 9600,
-            dataBits: 8,
-            stopBits: 1,
-            parity: 'None',
-            timeoutMs: 1000,
-            retries: 3,
-          },
+          connection: { ...createDefaultConnection('Slave'), ...t.connection },
           connected: false,
           config: {
-            unitId: t.config?.unitId ?? 1,
-            functionCode: t.config?.functionCode ?? '0x03',
-            startAddress: t.config?.startAddress ?? 0,
-            count: t.config?.count ?? 40,
-            dataType: t.config?.dataType ?? 'Int16',
-            format: t.config?.format ?? 'Dec',
-            byteOrder: t.config?.byteOrder ?? 'ABCD',
-            interval: t.config?.interval ?? 1000,
+            ...createDefaultModbusConfig(),
+            ...t.config,
             raw: Boolean(t.config?.raw),
           },
           values: {},
@@ -480,17 +468,7 @@ export const useSessionStore = defineStore('session', () => {
       title: deviceName,
       connection: { ...newConnection },
       connected: false,
-      config: {
-        unitId: 1,
-        functionCode: '0x03',
-        startAddress: 0,
-        count: 40,
-        dataType: 'Int16',
-        format: 'Dec',
-        byteOrder: 'ABCD',
-        interval: 1000,
-        raw: false,
-      },
+      config: createDefaultModbusConfig(),
       values: {},
       logs: [],
       statusMessage: `[${deviceName}] Idle.`,
