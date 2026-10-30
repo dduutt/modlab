@@ -83,7 +83,7 @@ async function handleCheckUpdate() {
 }
 
 function getPortableDownloadUrl(): string {
-  const version = updateInfo.value?.version || props.currentVersion || '0.1.2';
+  const version = updateInfo.value?.version || props.currentVersion || '0.2.0';
   const tag = version.startsWith('v') ? version : `v${version}`;
   return `https://update.dduu.cloud/dduutt/modlab/download/${tag}/Modlab-windows-x64.exe`;
 }
