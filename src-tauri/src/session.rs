@@ -79,6 +79,18 @@ pub enum SessionCommand {
     FillRandom(DataGenConfig),
 }
 
+#[derive(Debug)]
+pub struct CommandEnvelope {
+    pub cmd: SessionCommand,
+    pub resp: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+}
+
+impl From<SessionCommand> for CommandEnvelope {
+    fn from(cmd: SessionCommand) -> Self {
+        Self { cmd, resp: None }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "payload")]
 pub enum SessionEvent {
@@ -235,7 +247,7 @@ impl Service for SlaveService {
 pub struct SessionActor {
     _id: String,
     state: FsmState,
-    receiver: mpsc::Receiver<SessionCommand>,
+    receiver: mpsc::Receiver<CommandEnvelope>,
     event_sender: mpsc::Sender<SessionEvent>,
     config: Option<ConnectionConfig>,
     client: Option<ModbusContext>,
@@ -252,7 +264,7 @@ pub struct SessionActor {
 impl SessionActor {
     pub fn new(
         id: String,
-        receiver: mpsc::Receiver<SessionCommand>,
+        receiver: mpsc::Receiver<CommandEnvelope>,
         event_sender: mpsc::Sender<SessionEvent>,
         clients: Arc<RwLock<HashMap<usize, TcpClientInfo>>>,
     ) -> Self {
@@ -293,9 +305,9 @@ impl SessionActor {
 
         loop {
             tokio::select! {
-                cmd_opt = self.receiver.recv() => {
-                    match cmd_opt {
-                        Some(cmd) => self.handle_command(cmd, &mut poll_interval, &mut auto_inc_interval).await,
+                envelope_opt = self.receiver.recv() => {
+                    match envelope_opt {
+                        Some(envelope) => self.handle_command(envelope, &mut poll_interval, &mut auto_inc_interval).await,
                         None => break, // Channel dropped by frontend, exit cleanly
                     }
                 }
@@ -406,16 +418,24 @@ impl SessionActor {
 
     async fn handle_command(
         &mut self,
-        cmd: SessionCommand,
+        envelope: CommandEnvelope,
         interval: &mut time::Interval,
         auto_inc_interval: &mut time::Interval,
     ) {
+        let CommandEnvelope { cmd, resp } = envelope;
+        let respond = |res: Result<(), String>| {
+            if let Some(r) = resp {
+                let _ = r.send(res);
+            }
+        };
+
         if let Err(msg) = self.guard(&cmd) {
-            self.emit_error(msg).await;
+            self.emit_error(msg.clone()).await;
+            respond(Err(msg));
             return;
         }
 
-        match cmd {
+        let res = match cmd {
             SessionCommand::Connect(config) => {
                 self.is_polling = false;
                 self.cleanup().await;
@@ -430,11 +450,13 @@ impl SessionActor {
                     (_, "TCP") => self.connect_master_tcp(&config).await,
                     _ => self.connect_master_rtu(&config).await,
                 }
+                Ok(())
             }
             SessionCommand::Disconnect => {
                 self.is_polling = false;
                 self.cleanup().await;
                 self.set_state(FsmState::Disconnected).await;
+                Ok(())
             }
             SessionCommand::UpdateConfig(config) => {
                 if let Some(cfg) = &mut self.config {
@@ -448,6 +470,7 @@ impl SessionActor {
                 } else {
                     self.config = Some(config);
                 }
+                Ok(())
             }
             SessionCommand::StartPolling(interval_ms) => {
                 let min_interval = if self.config.as_ref().map(|c| c.protocol == "RTU").unwrap_or(false) {
@@ -460,11 +483,16 @@ impl SessionActor {
                 self.is_polling = true;
                 *interval = time::interval(Duration::from_millis(safe_interval));
                 interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+                Ok(())
             }
             SessionCommand::StopPolling => {
                 self.is_polling = false;
+                Ok(())
             }
-            SessionCommand::ReadOnce => self.execute_poll().await,
+            SessionCommand::ReadOnce => {
+                self.execute_poll().await;
+                Ok(())
+            }
             SessionCommand::WriteRegister(payload) => self.write_register(payload).await,
             SessionCommand::WriteRegistersBatch(batch) => self.write_registers_batch(batch).await,
             SessionCommand::StartAutoIncrement { interval_ms, config } => {
@@ -475,13 +503,16 @@ impl SessionActor {
                 *auto_inc_interval = time::interval(Duration::from_millis(safe_interval));
                 auto_inc_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
                 auto_inc_interval.tick().await;
+                Ok(())
             }
             SessionCommand::StopAutoIncrement => {
                 self.is_auto_incrementing = false;
                 self.auto_inc_config = None;
+                Ok(())
             }
             SessionCommand::FillRandom(config) => self.execute_fill_random(&config).await,
-        }
+        };
+        respond(res);
     }
 
     async fn connect_slave_tcp(&mut self, config: &ConnectionConfig) {
@@ -605,51 +636,99 @@ impl SessionActor {
         self.emit_data(map).await;
     }
 
-    async fn write_register(&mut self, payload: WritePayload) {
+    async fn write_register(&mut self, payload: WritePayload) -> Result<(), String> {
         if self.role_is("Slave") {
             self.write_local(HashMap::from([(payload.address, payload.value)])).await;
-            return;
+            return Ok(());
         }
         let is_coil = self.config.as_ref().map(|c| is_coil_function(&c.function_code)).unwrap_or(false);
-        let Some(ctx) = &mut self.client else { return };
+        let ctx = self.client.as_mut().ok_or_else(|| "Not connected".to_string())?;
         let res = if is_coil {
             ctx.write_single_coil(payload.address, payload.value != 0).await
         } else {
             ctx.write_single_register(payload.address, payload.value).await
         };
         match res {
-            Ok(Ok(_)) => {}
-            Ok(Err(ex)) => self.emit_error(format!("Write exception: {:?}", ex)).await,
-            Err(e) => self.emit_error(format!("Write failed: {}", e)).await,
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(ex)) => {
+                let msg = format!("Write exception: {:?}", ex);
+                self.emit_error(&msg).await;
+                Err(msg)
+            }
+            Err(e) => {
+                let msg = format!("Write failed: {}", e);
+                self.emit_error(&msg).await;
+                Err(msg)
+            }
         }
     }
 
-    async fn write_registers_batch(&mut self, batch: HashMap<u16, u16>) {
+    async fn write_registers_batch(&mut self, batch: HashMap<u16, u16>) -> Result<(), String> {
         if self.role_is("Slave") {
             self.write_local(batch).await;
-            return;
+            return Ok(());
         }
         let is_coil = self.config.as_ref().map(|c| is_coil_function(&c.function_code)).unwrap_or(false);
-        let Some(ctx) = &mut self.client else { return };
+        let ctx = self.client.as_mut().ok_or_else(|| "Not connected".to_string())?;
 
         if is_coil {
             for (addr, val) in &batch {
-                let _ = ctx.write_single_coil(*addr, *val != 0).await;
+                let res = ctx.write_single_coil(*addr, *val != 0).await;
+                match res {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(ex)) => {
+                        let msg = format!("Write coil exception: {:?}", ex);
+                        self.emit_error(&msg).await;
+                        return Err(msg);
+                    }
+                    Err(e) => {
+                        let msg = format!("Write coil failed: {}", e);
+                        self.emit_error(&msg).await;
+                        return Err(msg);
+                    }
+                }
             }
-            return;
+            return Ok(());
         }
         let mut addrs: Vec<u16> = batch.keys().copied().collect();
         addrs.sort_unstable();
-        let Some(&start) = addrs.first() else { return };
+        let Some(&start) = addrs.first() else { return Ok(()); };
         let count = addrs.len() as u16;
         let is_contiguous = addrs.last().copied() == Some(start + count - 1);
         if is_contiguous && count <= 123 {
             let vals: Vec<u16> = addrs.iter().map(|a| batch[a]).collect();
-            let _ = ctx.write_multiple_registers(start, &vals).await;
+            let res = ctx.write_multiple_registers(start, &vals).await;
+            match res {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(ex)) => {
+                    let msg = format!("Write multiple registers exception: {:?}", ex);
+                    self.emit_error(&msg).await;
+                    Err(msg)
+                }
+                Err(e) => {
+                    let msg = format!("Write multiple registers failed: {}", e);
+                    self.emit_error(&msg).await;
+                    Err(msg)
+                }
+            }
         } else {
             for (addr, val) in &batch {
-                let _ = ctx.write_single_register(*addr, *val).await;
+                let res = ctx.write_single_register(*addr, *val).await;
+                match res {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(ex)) => {
+                        let msg = format!("Write exception: {:?}", ex);
+                        self.emit_error(&msg).await;
+                        return Err(msg);
+                    }
+                    Err(e) => {
+                        let msg = format!("Write failed: {}", e);
+                        self.emit_error(&msg).await;
+                        return Err(msg);
+                    }
+                }
             }
+            Ok(())
         }
     }
 
@@ -830,14 +909,12 @@ impl SessionActor {
             }
         }
 
-        if !update_map.is_empty() {
-            let _ = self.event_sender.send(SessionEvent::DataUpdated(update_map)).await;
-        }
+        self.emit_data(update_map).await;
     }
 
-    async fn execute_fill_random(&mut self, config: &DataGenConfig) {
+    async fn execute_fill_random(&mut self, config: &DataGenConfig) -> Result<(), String> {
         if config.count == 0 {
-            return;
+            return Ok(());
         }
 
         let is_coil = is_coil_function(&config.function_code);
@@ -893,9 +970,8 @@ impl SessionActor {
             }
         }
 
-        if !update_map.is_empty() {
-            let _ = self.event_sender.send(SessionEvent::DataUpdated(update_map)).await;
-        }
+        self.emit_data(update_map).await;
+        Ok(())
     }
 }
 
@@ -980,6 +1056,10 @@ impl SimpleRng {
 mod tests {
     use super::*;
 
+    async fn send_cmd(tx: &mpsc::Sender<CommandEnvelope>, cmd: SessionCommand) {
+        tx.send(cmd.into()).await.unwrap();
+    }
+
     #[test]
     fn test_client_drop_guard() {
         let clients = Arc::new(RwLock::new(HashMap::new()));
@@ -1041,7 +1121,7 @@ mod tests {
             count: 20,
             timeout_ms: Some(1000),
         };
-        slave_cmd_tx.send(SessionCommand::Connect(slave_cfg)).await.unwrap();
+        send_cmd(&slave_cmd_tx, SessionCommand::Connect(slave_cfg)).await;
 
         let evt = slave_evt_rx.recv().await.unwrap();
         assert_eq!(evt, SessionEvent::StateChanged(FsmState::Connecting));
@@ -1071,7 +1151,7 @@ mod tests {
             count: 10,
             timeout_ms: Some(1000),
         };
-        master_cmd_tx.send(SessionCommand::Connect(master_cfg.clone())).await.unwrap();
+        send_cmd(&master_cmd_tx, SessionCommand::Connect(master_cfg.clone())).await;
 
         let evt = master_evt_rx.recv().await.unwrap();
         assert_eq!(evt, SessionEvent::StateChanged(FsmState::Connecting));
@@ -1085,11 +1165,11 @@ mod tests {
         assert_eq!(slave_clients.read().unwrap().len(), 1);
 
         // 3. Master writes register 5 = 1234
-        master_cmd_tx.send(SessionCommand::WriteRegister(WritePayload { address: 5, value: 1234 })).await.unwrap();
+        send_cmd(&master_cmd_tx, SessionCommand::WriteRegister(WritePayload { address: 5, value: 1234 })).await;
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // 4. Master reads registers
-        master_cmd_tx.send(SessionCommand::ReadOnce).await.unwrap();
+        send_cmd(&master_cmd_tx, SessionCommand::ReadOnce).await;
         let evt = master_evt_rx.recv().await.unwrap();
         match evt {
             SessionEvent::DataUpdated(map) => {
@@ -1099,29 +1179,29 @@ mod tests {
         }
 
         // 5. Test constraint: Write and ReadOnce rejected while polling is active
-        master_cmd_tx.send(SessionCommand::StartPolling(100)).await.unwrap();
-        master_cmd_tx.send(SessionCommand::WriteRegister(WritePayload { address: 6, value: 5678 })).await.unwrap();
+        send_cmd(&master_cmd_tx, SessionCommand::StartPolling(100)).await;
+        send_cmd(&master_cmd_tx, SessionCommand::WriteRegister(WritePayload { address: 6, value: 5678 })).await;
         let evt = master_evt_rx.recv().await.unwrap();
         assert_eq!(evt, SessionEvent::PollError("Cannot write while polling is active".into()));
 
-        master_cmd_tx.send(SessionCommand::ReadOnce).await.unwrap();
+        send_cmd(&master_cmd_tx, SessionCommand::ReadOnce).await;
         let evt = master_evt_rx.recv().await.unwrap();
         assert_eq!(evt, SessionEvent::PollError("Cannot read once while polling is active".into()));
 
-        master_cmd_tx.send(SessionCommand::StopPolling).await.unwrap();
+        send_cmd(&master_cmd_tx, SessionCommand::StopPolling).await;
 
         // 6. Test constraint: Write rejected for read-only FC 0x04
-        master_cmd_tx.send(SessionCommand::UpdateConfig(ConnectionConfig {
+        send_cmd(&master_cmd_tx, SessionCommand::UpdateConfig(ConnectionConfig {
             function_code: "0x04".into(),
             ..master_cfg
-        })).await.unwrap();
-        master_cmd_tx.send(SessionCommand::WriteRegister(WritePayload { address: 6, value: 5678 })).await.unwrap();
+        })).await;
+        send_cmd(&master_cmd_tx, SessionCommand::WriteRegister(WritePayload { address: 6, value: 5678 })).await;
         let evt = master_evt_rx.recv().await.unwrap();
         assert_eq!(evt, SessionEvent::PollError("Function code 0x04 is read-only".into()));
 
         // 7. Clean up
-        slave_cmd_tx.send(SessionCommand::Disconnect).await.unwrap();
-        master_cmd_tx.send(SessionCommand::Disconnect).await.unwrap();
+        send_cmd(&slave_cmd_tx, SessionCommand::Disconnect).await;
+        send_cmd(&master_cmd_tx, SessionCommand::Disconnect).await;
     }
 
     #[tokio::test]
@@ -1149,7 +1229,7 @@ mod tests {
             count: 20,
             timeout_ms: Some(1000),
         };
-        slave_cmd_tx.send(SessionCommand::Connect(slave_cfg)).await.unwrap();
+        send_cmd(&slave_cmd_tx, SessionCommand::Connect(slave_cfg)).await;
         let _ = slave_evt_rx.recv().await.unwrap(); // Connecting
         let _ = slave_evt_rx.recv().await.unwrap(); // Connected
 
@@ -1161,7 +1241,7 @@ mod tests {
             data_type: "Int16".into(),
             byte_order: "ABCD".into(),
         };
-        slave_cmd_tx.send(SessionCommand::FillRandom(gen_cfg.clone())).await.unwrap();
+        send_cmd(&slave_cmd_tx, SessionCommand::FillRandom(gen_cfg.clone())).await;
         let evt = slave_evt_rx.recv().await.unwrap();
         match evt {
             SessionEvent::DataUpdated(map) => {
@@ -1174,24 +1254,24 @@ mod tests {
         }
 
         // 2. Test StartAutoIncrement
-        slave_cmd_tx.send(SessionCommand::StartAutoIncrement {
+        send_cmd(&slave_cmd_tx, SessionCommand::StartAutoIncrement {
             interval_ms: 100,
             config: gen_cfg,
-        }).await.unwrap();
+        }).await;
 
         // 3. Test constraint: FillRandom rejected while auto-increment is active
-        slave_cmd_tx.send(SessionCommand::FillRandom(DataGenConfig {
+        send_cmd(&slave_cmd_tx, SessionCommand::FillRandom(DataGenConfig {
             start_address: 0,
             count: 5,
             function_code: "0x03".into(),
             data_type: "Int16".into(),
             byte_order: "ABCD".into(),
-        })).await.unwrap();
+        })).await;
         let evt = slave_evt_rx.recv().await.unwrap();
         assert_eq!(evt, SessionEvent::PollError("Cannot fill random while auto-increment is active".into()));
 
         // 4. Test constraint: Write rejected while auto-increment is active
-        slave_cmd_tx.send(SessionCommand::WriteRegister(WritePayload { address: 1, value: 99 })).await.unwrap();
+        send_cmd(&slave_cmd_tx, SessionCommand::WriteRegister(WritePayload { address: 1, value: 99 })).await;
         let evt = slave_evt_rx.recv().await.unwrap();
         assert_eq!(evt, SessionEvent::PollError("Cannot write while auto-increment is active".into()));
 
@@ -1205,10 +1285,10 @@ mod tests {
         }
 
         // 5. Stop auto increment
-        slave_cmd_tx.send(SessionCommand::StopAutoIncrement).await.unwrap();
+        send_cmd(&slave_cmd_tx, SessionCommand::StopAutoIncrement).await;
 
         // 6. Test constraint: Auto-increment rejected for read-only FC 0x04
-        slave_cmd_tx.send(SessionCommand::StartAutoIncrement {
+        send_cmd(&slave_cmd_tx, SessionCommand::StartAutoIncrement {
             interval_ms: 100,
             config: DataGenConfig {
                 start_address: 0,
@@ -1217,10 +1297,10 @@ mod tests {
                 data_type: "Int16".into(),
                 byte_order: "ABCD".into(),
             },
-        }).await.unwrap();
+        }).await;
         let evt = slave_evt_rx.recv().await.unwrap();
         assert_eq!(evt, SessionEvent::PollError("Function code 0x04 is read-only".into()));
 
-        slave_cmd_tx.send(SessionCommand::Disconnect).await.unwrap();
+        send_cmd(&slave_cmd_tx, SessionCommand::Disconnect).await;
     }
 }

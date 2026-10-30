@@ -185,12 +185,23 @@ export const useSessionStore = defineStore('session', () => {
     tab.logs = appendLog(tab.logs, logEntry);
   }
 
+  const findTab = (tabId: string) => tabs.value.find(t => t.id === tabId);
+  const isReadonlyFc = (fc: string) => ['0x02', '0x04'].includes(fc);
+
+  function resetRuntime(target: SessionTab, stopSession = true) {
+    target.connected = false;
+    target.busy = false;
+    target.isPolling = false;
+    target.autoIncrement = false;
+    if (stopSession) stopAutoIncrement(target.id);
+  }
+
   function getOrCreateSession(tabId: string) {
     let session = sessions.get(tabId);
     if (!session) {
       session = useSession(tabId, {
         onStateChanged: (state) => {
-          const target = tabs.value.find(t => t.id === tabId);
+          const target = findTab(tabId);
           if (!target) return;
           if (state === 'Connected') {
             target.connected = true;
@@ -199,27 +210,19 @@ export const useSessionStore = defineStore('session', () => {
             target.statusMessage = `[${target.title}] Connected.`;
             addLog(target, 'RX', `${target.connection.role} Connected OK`, 'Status: Active');
           } else if (state === 'Disconnected') {
-            target.connected = false;
-            target.busy = false;
-            target.isPolling = false;
-            target.autoIncrement = false;
-            stopAutoIncrement(tabId);
+            resetRuntime(target);
             target.statusType = 'info';
             target.statusMessage = `[${target.title}] Disconnected.`;
             addLog(target, 'RX', `${target.connection.role} Disconnected OK`, 'Status: Closed');
           } else if (typeof state === 'object' && 'Error' in state) {
-            target.connected = false;
-            target.busy = false;
-            target.isPolling = false;
-            target.autoIncrement = false;
-            stopAutoIncrement(tabId);
+            resetRuntime(target);
             target.statusType = 'error';
             target.statusMessage = `[${target.title}] Error: ${state.Error}`;
             addLog(target, 'RX', `${target.connection.role} Error`, state.Error);
           }
         },
         onDataUpdated: (data) => {
-          const target = tabs.value.find(t => t.id === tabId);
+          const target = findTab(tabId);
           if (!target) return;
           target.values = { ...target.values, ...data };
           if (target.statusType === 'error' && target.statusMessage.includes('failed')) {
@@ -229,7 +232,7 @@ export const useSessionStore = defineStore('session', () => {
           }
         },
         onPollError: (err) => {
-          const target = tabs.value.find(t => t.id === tabId);
+          const target = findTab(tabId);
           if (!target) return;
           target.statusType = 'error';
           target.statusMessage = `[${target.title}] Operation failed: ${err}`;
@@ -259,14 +262,14 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function startAutoIncrement(tabId: string) {
-    const tab = tabs.value.find(t => t.id === tabId);
-    if (!tab || !tab.connected || ['0x02', '0x04'].includes(tab.config.functionCode)) return;
+    const tab = findTab(tabId);
+    if (!tab || !tab.connected || isReadonlyFc(tab.config.functionCode)) return;
     const session = getOrCreateSession(tabId);
     await session.startAutoIncrement(tab.config.interval || 1000, buildDataGenConfig(tab.config));
   }
 
   async function toggleConnect(tabId: string) {
-    const tab = tabs.value.find(t => t.id === tabId);
+    const tab = findTab(tabId);
     if (!tab || tab.busy) return;
     const session = getOrCreateSession(tabId);
     const started = Date.now();
@@ -293,7 +296,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function togglePolling(tabId: string) {
-    const tab = tabs.value.find(t => t.id === tabId);
+    const tab = findTab(tabId);
     if (!tab || !tab.connected || tab.busy) return;
     const session = getOrCreateSession(tabId);
     if (tab.isPolling) {
@@ -310,7 +313,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function toggleAutoIncrement(tabId: string) {
-    const tab = tabs.value.find(t => t.id === tabId);
+    const tab = findTab(tabId);
     if (!tab || !tab.connected || tab.busy) return;
     tab.autoIncrement = !tab.autoIncrement;
     if (tab.autoIncrement) {
@@ -323,7 +326,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function readOnce(tabId: string) {
-    const tab = tabs.value.find(t => t.id === tabId);
+    const tab = findTab(tabId);
     if (!tab || !tab.connected || tab.busy || tab.isPolling) return;
     const session = getOrCreateSession(tabId);
     addLog(
@@ -336,9 +339,9 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function writeCell(tabId: string, address: number, value: number) {
-    const tab = tabs.value.find(t => t.id === tabId);
+    const tab = findTab(tabId);
     if (!tab || tab.busy) return;
-    if (tab.isPolling || tab.autoIncrement || ['0x02', '0x04'].includes(tab.config.functionCode)) return;
+    if (tab.isPolling || tab.autoIncrement || isReadonlyFc(tab.config.functionCode)) return;
     const session = getOrCreateSession(tabId);
     const started = Date.now();
     addLog(tab, 'TX', `Write Register (Addr: ${address})`, `Val: ${value}`);
@@ -362,9 +365,9 @@ export const useSessionStore = defineStore('session', () => {
     addr2: number,
     val2: number
   ) {
-    const tab = tabs.value.find(t => t.id === tabId);
+    const tab = findTab(tabId);
     if (!tab || tab.busy) return;
-    if (tab.isPolling || tab.autoIncrement || ['0x02', '0x04'].includes(tab.config.functionCode)) return;
+    if (tab.isPolling || tab.autoIncrement || isReadonlyFc(tab.config.functionCode)) return;
     const session = getOrCreateSession(tabId);
     const started = Date.now();
     addLog(
@@ -395,9 +398,9 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function fillRandom(tabId: string) {
-    const tab = tabs.value.find(t => t.id === tabId);
+    const tab = findTab(tabId);
     if (!tab || (!tab.connected && tab.connection.role !== 'Slave') || tab.busy) return;
-    if (tab.isPolling || tab.autoIncrement || ['0x02', '0x04'].includes(tab.config.functionCode)) return;
+    if (tab.isPolling || tab.autoIncrement || isReadonlyFc(tab.config.functionCode)) return;
     const session = getOrCreateSession(tabId);
     const started = Date.now();
     addLog(
@@ -426,7 +429,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function updateConfig(tabId: string, nextConfig: ModbusConfig) {
-    const tab = tabs.value.find(t => t.id === tabId);
+    const tab = findTab(tabId);
     if (!tab) return;
     const minInterval = tab.connection.protocol === 'RTU' ? 100 : 20;
     nextConfig.interval = Math.max(minInterval, nextConfig.interval);
@@ -451,7 +454,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function updateConnection(tabId: string, newConnection: ConnectionConfig, newTitle?: string) {
-    const tab = tabs.value.find(t => t.id === tabId);
+    const tab = findTab(tabId);
     if (!tab || tab.connected || tab.busy) return;
     tab.connection = { ...newConnection };
     if (newTitle && newTitle.trim()) {

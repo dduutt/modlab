@@ -41,8 +41,6 @@ export interface UseSessionOptions {
 
 export function useSession(sessionId: string, options?: UseSessionOptions) {
   const fsmState = ref<FsmState>('Disconnected');
-  const values = ref<Record<number, number>>({});
-  const lastError = ref<string | null>(null);
   const isSpawned = ref<boolean>(false);
 
   const isConnected = computed(() => fsmState.value === 'Connected');
@@ -51,7 +49,7 @@ export function useSession(sessionId: string, options?: UseSessionOptions) {
     if (typeof fsmState.value === 'object' && 'Error' in fsmState.value) {
       return fsmState.value.Error;
     }
-    return lastError.value;
+    return null;
   });
 
   async function ensureSpawned() {
@@ -60,17 +58,10 @@ export function useSession(sessionId: string, options?: UseSessionOptions) {
       await ModbusService.spawnSession(sessionId, (event: SessionEvent) => {
         if (event.type === 'StateChanged') {
           fsmState.value = event.payload;
-          if (typeof event.payload === 'object' && 'Error' in event.payload) {
-            lastError.value = event.payload.Error;
-          } else if (event.payload === 'Connected') {
-            lastError.value = null;
-          }
           options?.onStateChanged?.(event.payload);
         } else if (event.type === 'DataUpdated') {
-          values.value = { ...values.value, ...event.payload };
           options?.onDataUpdated?.(event.payload);
         } else if (event.type === 'PollError') {
-          lastError.value = event.payload;
           options?.onPollError?.(event.payload);
         }
       });
@@ -150,8 +141,6 @@ export function useSession(sessionId: string, options?: UseSessionOptions) {
   return {
     sessionId,
     fsmState,
-    values,
-    lastError,
     isConnected,
     isConnecting,
     errorMessage,

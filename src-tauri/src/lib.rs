@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::ipc::Channel;
 use tokio::sync::{mpsc, Mutex};
-use session::{SessionActor, SessionCommand, SessionEvent};
+use session::{CommandEnvelope, SessionActor, SessionCommand, SessionEvent};
 pub use session::TcpClientInfo;
 
 pub struct SessionHandle {
-    pub cmd_tx: mpsc::Sender<SessionCommand>,
+    pub cmd_tx: mpsc::Sender<CommandEnvelope>,
     pub clients: Arc<std::sync::RwLock<HashMap<usize, TcpClientInfo>>>,
 }
 
@@ -62,8 +62,18 @@ async fn dispatch_session_command(
     };
 
     if let Some(tx) = sender {
-        tx.send(command).await.map_err(|e| e.to_string())?;
-        Ok(())
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        tx.send(CommandEnvelope {
+            cmd: command,
+            resp: Some(resp_tx),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+        match resp_rx.await {
+            Ok(res) => res,
+            Err(_) => Err("Session terminated before responding".into()),
+        }
     } else {
         Err(format!("Session {} not found", session_id))
     }
