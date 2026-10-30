@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::future::{ready, Ready};
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
+use std::task::{Context, Poll};
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 use tokio::time;
 use tokio_modbus::client::Context as ModbusContext;
@@ -92,13 +96,109 @@ impl From<SessionCommand> for CommandEnvelope {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FramePayload {
+    pub direction: String,
+    pub bytes: String,
+    pub protocol: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "payload")]
 pub enum SessionEvent {
     StateChanged(FsmState),
     DataUpdated(HashMap<u16, u16>),
     PollError(String),
+    FrameLogged(FramePayload),
 }
 
+pub struct WireTap<T> {
+    inner: T,
+    event_sender: mpsc::Sender<SessionEvent>,
+    protocol: String,
+}
+
+impl<T> WireTap<T> {
+    pub fn new(inner: T, event_sender: mpsc::Sender<SessionEvent>, protocol: String) -> Self {
+        Self {
+            inner,
+            event_sender,
+            protocol,
+        }
+    }
+}
+
+impl<T> fmt::Debug for WireTap<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WireTap")
+            .field("protocol", &self.protocol)
+            .finish()
+    }
+}
+
+fn bytes_to_hex(slice: &[u8]) -> String {
+    let mut s = String::with_capacity(slice.len() * 3);
+    for (i, b) in slice.iter().enumerate() {
+        if i > 0 {
+            s.push(' ');
+        }
+        use std::fmt::Write;
+        let _ = write!(s, "{:02X}", b);
+    }
+    s
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for WireTap<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let res = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &res {
+            let after = buf.filled().len();
+            if after > before {
+                let hex = bytes_to_hex(&buf.filled()[before..after]);
+                let _ = self.event_sender.try_send(SessionEvent::FrameLogged(FramePayload {
+                    direction: "RX".into(),
+                    bytes: hex,
+                    protocol: self.protocol.clone(),
+                }));
+            }
+        }
+        res
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for WireTap<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let res = Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = &res {
+            if *n > 0 {
+                let hex = bytes_to_hex(&buf[..*n]);
+                let _ = self.event_sender.try_send(SessionEvent::FrameLogged(FramePayload {
+                    direction: "TX".into(),
+                    bytes: hex,
+                    protocol: self.protocol.clone(),
+                }));
+            }
+        }
+        res
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TcpClientInfo {
@@ -558,7 +658,8 @@ impl SessionActor {
                     clients: clients.clone(),
                     _guard: guard,
                 };
-                ready(Ok(Some((service, stream))))
+                let tap = WireTap::new(stream, event_sender.clone(), "TCP".into());
+                ready(Ok(Some((service, tap))))
             };
             let _ = server
                 .serve_until(&on_connected, |_err| {}, async move {
@@ -578,9 +679,10 @@ impl SessionActor {
             }
         };
         let timeout_dur = Duration::from_millis(config.timeout_ms.unwrap_or(1000).clamp(500, 10000));
-        match time::timeout(timeout_dur, tcp::connect(addr)).await {
-            Ok(Ok(mut ctx)) => {
-                ctx.set_slave(Slave(config.unit_id));
+        match time::timeout(timeout_dur, tokio::net::TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => {
+                let tap = WireTap::new(stream, self.event_sender.clone(), "TCP".into());
+                let ctx = tcp::attach_slave(tap, Slave(config.unit_id));
                 self.client = Some(ctx);
                 self.set_state(FsmState::Connected).await;
             }
@@ -610,7 +712,8 @@ impl SessionActor {
             });
         match builder.open_native_async() {
             Ok(port) => {
-                self.client = Some(tokio_modbus::client::rtu::attach_slave(port, Slave(config.unit_id)));
+                let tap = WireTap::new(port, self.event_sender.clone(), "RTU".into());
+                self.client = Some(tokio_modbus::client::rtu::attach_slave(tap, Slave(config.unit_id)));
                 self.set_state(FsmState::Connected).await;
             }
             Err(e) => {
@@ -1185,27 +1288,51 @@ mod tests {
         send_cmd(&master_cmd_tx, SessionCommand::WriteRegister(WritePayload { address: 5, value: 1234 })).await;
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
+        async fn recv_non_frame(rx: &mut mpsc::Receiver<SessionEvent>) -> SessionEvent {
+            loop {
+                let evt = tokio::time::timeout(tokio::time::Duration::from_secs(1), rx.recv())
+                    .await
+                    .expect("Timeout waiting for event")
+                    .expect("Channel closed");
+                if !matches!(evt, SessionEvent::FrameLogged(_)) {
+                    return evt;
+                }
+            }
+        }
+
         // 4. Master reads registers
         send_cmd(&master_cmd_tx, SessionCommand::ReadOnce).await;
-        let evt = master_evt_rx.recv().await.unwrap();
-        match evt {
-            SessionEvent::DataUpdated(map) => {
-                assert_eq!(map.get(&5), Some(&1234));
+        let mut got_data = None;
+        let mut frames_count = 0;
+        while let Ok(Some(evt)) = tokio::time::timeout(tokio::time::Duration::from_millis(300), master_evt_rx.recv()).await {
+            match evt {
+                SessionEvent::DataUpdated(map) => {
+                    got_data = Some(map);
+                    break;
+                }
+                SessionEvent::FrameLogged(_) => {
+                    frames_count += 1;
+                }
+                other => panic!("Expected DataUpdated or FrameLogged, got {:?}", other),
             }
-            other => panic!("Expected DataUpdated, got {:?}", other),
         }
+        assert!(frames_count > 0, "Expected wire frame events to be emitted");
+        assert_eq!(got_data.as_ref().and_then(|m| m.get(&5)), Some(&1234));
 
         // 5. Test constraint: Write and ReadOnce rejected while polling is active
         send_cmd(&master_cmd_tx, SessionCommand::StartPolling(100)).await;
         send_cmd(&master_cmd_tx, SessionCommand::WriteRegister(WritePayload { address: 6, value: 5678 })).await;
-        let evt = master_evt_rx.recv().await.unwrap();
+        let evt = recv_non_frame(&mut master_evt_rx).await;
         assert_eq!(evt, SessionEvent::PollError("Cannot write while polling is active".into()));
 
         send_cmd(&master_cmd_tx, SessionCommand::ReadOnce).await;
-        let evt = master_evt_rx.recv().await.unwrap();
+        let evt = recv_non_frame(&mut master_evt_rx).await;
         assert_eq!(evt, SessionEvent::PollError("Cannot read once while polling is active".into()));
 
         send_cmd(&master_cmd_tx, SessionCommand::StopPolling).await;
+
+        // Drain any lingering polling frames/data
+        while let Ok(Some(_)) = tokio::time::timeout(tokio::time::Duration::from_millis(50), master_evt_rx.recv()).await {}
 
         // 6. Test constraint: Write rejected for read-only FC 0x04
         send_cmd(&master_cmd_tx, SessionCommand::UpdateConfig(ConnectionConfig {
@@ -1213,7 +1340,7 @@ mod tests {
             ..master_cfg
         })).await;
         send_cmd(&master_cmd_tx, SessionCommand::WriteRegister(WritePayload { address: 6, value: 5678 })).await;
-        let evt = master_evt_rx.recv().await.unwrap();
+        let evt = recv_non_frame(&mut master_evt_rx).await;
         assert_eq!(evt, SessionEvent::PollError("Function code 0x04 is read-only".into()));
 
         // 7. Clean up

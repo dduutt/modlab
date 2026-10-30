@@ -7,6 +7,7 @@ import {
   type SessionEvent,
   type TcpClientInfo,
   type DataGenConfig,
+  type FramePayload,
 } from '../services/modbusService';
 import type { ConnectionConfig } from '../components/SettingsModal.vue';
 import type { ModbusConfig } from '../components/ConfigRow.vue';
@@ -37,6 +38,7 @@ export interface UseSessionOptions {
   onDataUpdated?: (data: Record<number, number>) => void;
   onStateChanged?: (state: FsmState) => void;
   onPollError?: (error: string) => void;
+  onFrameLogged?: (frame: FramePayload) => void;
 }
 
 export function useSession(sessionId: string, options?: UseSessionOptions) {
@@ -68,6 +70,8 @@ export function useSession(sessionId: string, options?: UseSessionOptions) {
             options?.onDataUpdated?.(event.payload);
           } else if (event.type === 'PollError') {
             options?.onPollError?.(event.payload);
+          } else if (event.type === 'FrameLogged') {
+            options?.onFrameLogged?.(event.payload);
           }
         });
         isSpawned.value = true;

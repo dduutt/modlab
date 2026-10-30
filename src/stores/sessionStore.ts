@@ -238,6 +238,30 @@ export const useSessionStore = defineStore('session', () => {
           target.statusMessage = `[${target.title}] Operation failed: ${err}`;
           addLog(target, 'RX', 'Operation Failed', err);
         },
+        onFrameLogged: (frame) => {
+          const target = findTab(tabId);
+          if (!target) return;
+          const timestampMs = Date.now();
+          const logEntry: LogEntry = {
+            id: crypto.randomUUID(),
+            sessionId: target.id,
+            deviceName: target.title,
+            direction: frame.direction,
+            message: '',
+            bytes: frame.bytes,
+            timestampMs,
+            time:
+              new Date(timestampMs).toLocaleTimeString('en-GB', { hour12: false }) +
+              '.' +
+              String(timestampMs % 1000).padStart(3, '0'),
+            kind: 'frame',
+            level: 'info',
+            detail: true,
+            role: target.connection.role,
+            protocol: frame.protocol,
+          };
+          target.logs = appendLog(target.logs, logEntry);
+        },
       });
       sessions.set(tabId, session);
     }

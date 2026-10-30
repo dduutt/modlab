@@ -50,10 +50,17 @@ export type SessionCommand =
   | { type: 'StopAutoIncrement' }
   | { type: 'FillRandom'; payload: DataGenConfig };
 
+export interface FramePayload {
+  direction: 'TX' | 'RX';
+  bytes: string;
+  protocol: 'TCP' | 'RTU';
+}
+
 export type SessionEvent =
   | { type: 'StateChanged'; payload: FsmState }
   | { type: 'DataUpdated'; payload: Record<number, number> }
-  | { type: 'PollError'; payload: string };
+  | { type: 'PollError'; payload: string }
+  | { type: 'FrameLogged'; payload: FramePayload };
 
 export interface TcpClientInfo {
   id: number;
