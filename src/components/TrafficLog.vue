@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue';
-import { decodeFrame } from '../utils/logging';
-import { Trash2, X, Filter, Copy } from '@lucide/vue';
+import { decodeFrame, formatSummary } from '../utils/logging';
+import { Trash2, X, Filter, Copy, ChevronRight } from '@lucide/vue';
 
 export interface LogEntry {
   id: string;
@@ -60,8 +60,10 @@ const filteredLogs = computed(() => displayedLogs.value.filter(log =>
 ));
 async function copyLog(log: LogEntry) {
   try {
-    await navigator.clipboard.writeText(`${log.time} [${log.deviceName || ''}] ${log.kind === 'frame' ? log.direction : 'ERROR'} ${log.bytes}
-${decodeFrame(log).join('\n')}`);
+    const summary = formatSummary(log);
+    const detailLines = decodeFrame(log);
+    const content = log.bytes ? `Raw Hex: ${log.bytes}\n${detailLines.join('\n')}` : detailLines.join('\n');
+    await navigator.clipboard.writeText(`${log.time} [${log.deviceName || ''}] ${log.kind === 'frame' ? log.direction : 'ERROR'} ${summary}\n${content}`);
     copyFailed.value = false;
   } catch { copyFailed.value = true; }
 }
@@ -128,19 +130,47 @@ ${decodeFrame(log).join('\n')}`);
       <div v-if="filteredLogs.length === 0" class="flex h-full items-center justify-center text-gray-400 font-sans text-xs">
         {{ $t('logWindow.noLogs') }}
       </div>
-      <details v-for="log in filteredLogs" :key="log.id" @toggle="(event: Event) => { if ((event.target as HTMLDetailsElement).open) pause(); }" class="min-w-[540px] border-b border-gray-100 last:border-0">
-        <summary class="flex cursor-pointer list-none items-baseline gap-3 py-1 hover:bg-gray-50 focus-visible:outline-blue-400">
-          <span class="w-[92px] shrink-0 text-gray-400">{{ log.time }}</span>
+      <details
+        v-for="log in filteredLogs"
+        :key="log.id"
+        @toggle="(event: Event) => { if ((event.target as HTMLDetailsElement).open) pause(); }"
+        class="group min-w-[540px] border-b border-gray-100 last:border-0"
+      >
+        <summary class="flex cursor-pointer list-none items-center gap-2 py-1 hover:bg-gray-50 focus-visible:outline-blue-400">
+          <ChevronRight class="h-3.5 w-3.5 shrink-0 text-gray-400 transition-transform duration-150 group-open:rotate-90" />
+          <span class="w-[88px] shrink-0 text-gray-400 font-mono">{{ log.time }}</span>
           <span class="w-16 shrink-0 truncate text-gray-500" :title="log.deviceName">{{ log.deviceName }}</span>
-          <span :class="['w-12 shrink-0', log.level === 'error' ? 'text-red-600' : log.level === 'success' ? 'text-emerald-600' : 'text-gray-500']">
+          <span :class="['w-10 shrink-0 font-medium', log.level === 'error' ? 'text-red-600' : log.level === 'success' ? 'text-emerald-600' : 'text-gray-500']">
             {{ log.kind === 'frame' ? log.direction : $t('logWindow.' + log.level) }}
           </span>
-          <span :class="['min-w-0 flex-1 whitespace-pre-wrap break-all font-mono', log.level === 'error' ? 'text-red-600' : 'text-gray-700']" :title="log.message + ' ' + log.bytes">{{ log.bytes }}</span>
-          <span v-if="log.durationMs !== undefined" class="shrink-0 text-gray-400">{{ log.durationMs }} ms</span>
-          <button @click.stop.prevent="copyLog(log)" :title="$t('common.copy')" :aria-label="$t('common.copy')" class="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"><Copy class="h-3.5 w-3.5" /></button>
+          <span
+            :class="['min-w-0 flex-1 truncate font-mono', log.level === 'error' ? 'text-red-600' : 'text-gray-700']"
+            :title="formatSummary(log)"
+          >
+            {{ formatSummary(log) }}
+          </span>
+          <span v-if="log.durationMs !== undefined" class="shrink-0 text-gray-400 tabular-nums">{{ log.durationMs }} ms</span>
+          <button
+            @click.stop.prevent="copyLog(log)"
+            :title="$t('common.copy')"
+            :aria-label="$t('common.copy')"
+            class="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 cursor-pointer"
+          >
+            <Copy class="h-3.5 w-3.5" />
+          </button>
         </summary>
-        <div class="whitespace-pre-wrap break-all rounded bg-gray-50 px-3 py-2 text-gray-600">
-          <div v-for="(line, index) in decodeFrame(log)" :key="index">{{ line }}</div>
+        <div class="space-y-1.5 font-mono text-[11px] rounded bg-gray-50 px-3 py-2 text-gray-600">
+          <div v-if="log.bytes" class="flex items-start gap-2">
+            <span class="shrink-0 font-semibold text-gray-500 select-none">Raw Hex:</span>
+            <span class="break-all text-gray-800 selection:bg-blue-100">{{ log.bytes }}</span>
+          </div>
+          <div v-if="log.message && log.kind === 'frame'" class="flex items-start gap-2 text-gray-500">
+            <span class="shrink-0 font-semibold select-none">Message:</span>
+            <span class="break-all">{{ log.message }}</span>
+          </div>
+          <div class="border-t border-gray-200/60 pt-1 mt-1 space-y-0.5">
+            <div v-for="(line, index) in decodeFrame(log)" :key="index">{{ line }}</div>
+          </div>
         </div>
       </details>
     </div>

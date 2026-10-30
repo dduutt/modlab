@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import ts from 'typescript';
 import { loadTs } from './helpers.mjs';
-const { appendLog, decodeFrame } = await loadTs('../src/utils/logging.ts');
+const { appendLog, decodeFrame, formatSummary } = await loadTs('../src/utils/logging.ts');
 const script = readFileSync(new URL('../src/utils/legacyHandlers.ts', import.meta.url), 'utf8');
 const source = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true);
 const names = new Set(['trimLogs', 'broadcastLog', 'logFailure']);
@@ -55,4 +55,57 @@ test('partial bytes are labelled incomplete without presenting fabricated values
     bytes: '00 01 00 00 00 06 02 03 00' });
   assert.ok(decoded.includes('Incomplete / unframed data'));
   assert.ok(!decoded.some(line => line.startsWith('Values:')));
+});
+
+test('formatSummary returns friendly summary for frames and operation logs', () => {
+  // Operation log
+  assert.equal(formatSummary({ kind: 'operation', message: 'Connection lost' }), 'Connection lost');
+
+  // TCP Read Holding Registers Request
+  assert.equal(
+    formatSummary({
+      kind: 'frame',
+      protocol: 'TCP',
+      role: 'Master',
+      direction: 'TX',
+      bytes: '00 01 00 00 00 06 01 03 00 00 00 0A',
+    }),
+    'Unit 1 · Read Holding Registers · Addr: 0, Count: 10'
+  );
+
+  // TCP Read Holding Registers Response (10 registers = 20 bytes)
+  assert.equal(
+    formatSummary({
+      kind: 'frame',
+      protocol: 'TCP',
+      role: 'Master',
+      direction: 'RX',
+      bytes: '00 01 00 00 00 17 01 03 14 00 01 00 02',
+    }),
+    'Unit 1 · Read Holding Registers · Resp: 10 reg(s)'
+  );
+
+  // RTU Write Single Register Request
+  assert.equal(
+    formatSummary({
+      kind: 'frame',
+      protocol: 'RTU',
+      role: 'Master',
+      direction: 'TX',
+      bytes: '01 06 00 05 04 D2 19 6F',
+    }),
+    'Unit 1 · Write Single Register · Addr: 5, Val: 1234'
+  );
+
+  // Modbus Exception Response
+  assert.equal(
+    formatSummary({
+      kind: 'frame',
+      protocol: 'TCP',
+      role: 'Master',
+      direction: 'RX',
+      bytes: '00 01 00 00 00 03 01 83 02',
+    }),
+    'Unit 1 · FC 0x03 Exception 0x02'
+  );
 });

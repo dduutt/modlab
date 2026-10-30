@@ -1,8 +1,79 @@
 import type { LogEntry } from '../components/TrafficLog.vue';
 
+const FC_NAMES: Record<number, string> = {
+  1: 'Read Coils',
+  2: 'Read Discrete Inputs',
+  3: 'Read Holding Registers',
+  4: 'Read Input Registers',
+  5: 'Write Single Coil',
+  6: 'Write Single Register',
+  15: 'Write Multiple Coils',
+  16: 'Write Multiple Registers',
+};
+
 // Keep every actual transfer, including identical replies and retries.
 export function appendLog(logs: LogEntry[], incoming: LogEntry) {
   return [incoming, ...logs].slice(0, 2000);
+}
+
+export function formatSummary(log: LogEntry): string {
+  if (log.kind !== 'frame') {
+    return log.message || log.bytes || '';
+  }
+  const bytes = log.bytes ? log.bytes.trim().split(/\s+/).map(byte => Number.parseInt(byte, 16)) : [];
+  if (!bytes.length || bytes.some(byte => !Number.isInteger(byte))) {
+    return log.message || log.bytes || '';
+  }
+
+  const tcp = log.protocol === 'TCP';
+  const offset = tcp ? 6 : 0;
+  if (bytes.length < offset + 2) {
+    return `${log.protocol || 'Modbus'} · ${bytes.length} bytes (Incomplete)`;
+  }
+
+  const unitId = bytes[offset];
+  const fc = bytes[offset + 1];
+  const word = (i: number) => bytes[i] * 256 + bytes[i + 1];
+  const pdu = offset + 2;
+  const end = tcp ? bytes.length : bytes.length - 2;
+
+  // Modbus exception response
+  if ((fc & 0x80) !== 0) {
+    const origFc = fc & 0x7f;
+    const exCode = end > pdu ? `0x${bytes[pdu].toString(16).padStart(2, '0').toUpperCase()}` : 'Unknown';
+    const fcHex = `0x${origFc.toString(16).padStart(2, '0').toUpperCase()}`;
+    return `Unit ${unitId} · FC ${fcHex} Exception ${exCode}`;
+  }
+
+  const fcName = FC_NAMES[fc] || `FC 0x${fc.toString(16).padStart(2, '0').toUpperCase()}`;
+  const request = log.role === 'Master' ? log.direction === 'TX' : log.direction === 'RX';
+
+  if (request) {
+    if ([1, 2, 3, 4, 15, 16].includes(fc) && end >= pdu + 4) {
+      return `Unit ${unitId} · ${fcName} · Addr: ${word(pdu)}, Count: ${word(pdu + 2)}`;
+    }
+    if ([5, 6].includes(fc) && end >= pdu + 4) {
+      return `Unit ${unitId} · ${fcName} · Addr: ${word(pdu)}, Val: ${word(pdu + 2)}`;
+    }
+    return `Unit ${unitId} · ${fcName}`;
+  } else {
+    // Response
+    if ([1, 2].includes(fc) && end > pdu) {
+      const bitCount = bytes[pdu] * 8;
+      return `Unit ${unitId} · ${fcName} · Resp: ${bitCount} bits`;
+    }
+    if ([3, 4].includes(fc) && end > pdu) {
+      const regCount = Math.floor(bytes[pdu] / 2);
+      return `Unit ${unitId} · ${fcName} · Resp: ${regCount} reg(s)`;
+    }
+    if ([5, 6].includes(fc) && end >= pdu + 4) {
+      return `Unit ${unitId} · ${fcName} · Addr: ${word(pdu)}, Val: ${word(pdu + 2)}`;
+    }
+    if ([15, 16].includes(fc) && end >= pdu + 4) {
+      return `Unit ${unitId} · ${fcName} · Addr: ${word(pdu)}, Count: ${word(pdu + 2)}`;
+    }
+    return `Unit ${unitId} · ${fcName} Response`;
+  }
 }
 
 export function decodeFrame(log: LogEntry): string[] {
