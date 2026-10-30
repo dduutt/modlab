@@ -1,237 +1,39 @@
 <script setup lang="ts">
-import { ref, computed, watch, onUnmounted, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
+import { useI18n } from 'vue-i18n';
+import { getVersion } from '@tauri-apps/api/app';
+
 import TabBar from './components/TabBar.vue';
 import Toolbar from './components/Toolbar.vue';
-import ConfigRow, { type ModbusConfig } from './components/ConfigRow.vue';
+import ConfigRow from './components/ConfigRow.vue';
 import DataGrid from './components/DataGrid.vue';
 import StatusBar from './components/StatusBar.vue';
 import SettingsModal, { type ConnectionConfig } from './components/SettingsModal.vue';
-import TrafficLog, { type LogEntry } from './components/TrafficLog.vue';
+import TrafficLog from './components/TrafficLog.vue';
 import ConfirmModal from './components/ConfirmModal.vue';
 import AboutModal from './components/AboutModal.vue';
-import { appendLog } from './utils/logging';
-import { ModbusService } from './services/modbusService';
 import { UpdateService } from './services/updateService';
-import { generateRandomRegisters, incrementFormattedValue } from './utils/modbusFormatter';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { getVersion } from '@tauri-apps/api/app';
+import { useSessionStore } from './stores/sessionStore';
 
-import { useI18n } from 'vue-i18n';
-
+const store = useSessionStore();
 const { locale } = useI18n();
+
 const language = computed<'en' | 'zh'>(() => locale.value as 'en' | 'zh');
 function toggleLanguage() {
   locale.value = locale.value === 'en' ? 'zh' : 'en';
 }
 
-let unlistenTraffic: UnlistenFn | null = null;
-
-onMounted(async () => {
-  try {
-    unlistenTraffic = await listen<any>('traffic-log-entry', (event) => {
-      const entry = event.payload;
-      if (!entry || !entry.sessionId || entry.origin === 'frontend') return;
-      const targetTab = tabs.value.find(t => t.id === entry.sessionId);
-      if (targetTab) {
-        if (!targetTab.logs.some(l => l.id === entry.id)) {
-          const log: LogEntry = {
-            id: entry.id,
-            time: entry.timestamp || new Date().toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(Date.now() % 1000).padStart(3, '0'),
-            deviceName: targetTab.title,
-            sessionId: targetTab.id,
-            timestampMs: entry.timestampMs ?? Date.now(),
-            durationMs: entry.durationMs,
-            level: entry.level || 'info',
-            kind: entry.kind || 'frame',
-            detail: entry.detail ?? true,
-            direction: entry.direction,
-            message: entry.message,
-            bytes: entry.bytes,
-            protocol: entry.protocol,
-            complete: entry.complete,
-            role: targetTab.connection.role,
-          };
-          log.time = new Date(log.timestampMs).toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(log.timestampMs % 1000).padStart(3, '0');
-          if (log.kind === 'frame' || log.level === 'error') targetTab.logs = appendLog(targetTab.logs, log);
-          trimLogs(targetTab);
-        }
-      }
-    });
-  } catch (err) {
-    console.error('Failed to register traffic-log-entry listener in App.vue:', err);
-  }
-
-  // Fetch actual app version from Tauri
-  try {
-    appVersion.value = await getVersion();
-  } catch {
-    // Keep fallback version
-  }
-
-  // Silent check for updates on startup
-  setTimeout(async () => {
-    try {
-      const res = await UpdateService.checkForUpdates();
-      if (res.available) {
-        hasUpdate.value = true;
-        updateInfo.value = res;
-        console.info(`[Update] New version available: v${res.version}`);
-      }
-    } catch {
-      // Ignore background check errors
-    }
-  }, 3000);
-});
-
-interface SessionTab {
-  id: string;
-  title: string;
-  connection: ConnectionConfig;
-  connected: boolean;
-  busy?: boolean;
-  connectionVersion?: number;
-  valueVersion?: number;
-  config: ModbusConfig;
-  values: Record<number, number>;
-  logs: LogEntry[];
-  statusMessage: string;
-  statusType: 'error' | 'success' | 'info';
-  autoIncrement?: boolean;
-  isPolling?: boolean;
-}
-
-const STORAGE_KEY = 'modlab_session_configs_v1';
-
-function getDefaultTabs(): SessionTab[] {
-  return [
-    {
-      id: 'slave-1',
-      title: 'Slave 1',
-      connection: {
-        role: 'Slave',
-        protocol: 'TCP',
-        ip: '127.0.0.1',
-        port: 502,
-        serialPort: 'COM1',
-        baudRate: 9600,
-        dataBits: 8,
-        stopBits: 1,
-        parity: 'None',
-        timeoutMs: 1000,
-        retries: 3,
-      },
-      connected: false,
-      config: {
-        unitId: 1,
-        functionCode: '0x03',
-        startAddress: 0,
-        count: 40,
-        dataType: 'Int16',
-        format: 'Dec',
-        byteOrder: 'ABCD',
-        interval: 1000,
-        raw: false,
-      },
-      values: {},
-      logs: [],
-      statusMessage: '[Slave 1] Disconnected.',
-      statusType: 'info',
-    },
-  ];
-}
-
-function loadSavedState(): { loadedTabs: SessionTab[]; savedActiveId: string } {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
-        const loadedTabs: SessionTab[] = parsed.tabs.map((t: any) => ({
-          id: t.id || `tab-${Math.random().toString(36).slice(2)}`,
-          title: t.title || 'Device',
-          connection: t.connection || {
-            role: 'Slave',
-            protocol: 'TCP',
-            ip: '127.0.0.1',
-            port: 502,
-            serialPort: 'COM1',
-            baudRate: 9600,
-            dataBits: 8,
-            stopBits: 1,
-            parity: 'None',
-            timeoutMs: 1000,
-            retries: 3,
-          },
-          connected: false, // ALWAYS unconnected on startup!
-          config: {
-            unitId: t.config?.unitId ?? 1,
-            functionCode: t.config?.functionCode ?? '0x03',
-            startAddress: t.config?.startAddress ?? 0,
-            count: t.config?.count ?? 40,
-            dataType: t.config?.dataType ?? 'Int16',
-            format: t.config?.format ?? 'Dec',
-            byteOrder: t.config?.byteOrder ?? 'ABCD',
-            interval: t.config?.interval ?? 1000,
-            raw: Boolean(t.config?.raw),
-          },
-          values: {}, // ALWAYS empty values on startup!
-          logs: [],   // ALWAYS empty logs on startup!
-          statusMessage: `[${t.title || 'Device'}] Disconnected.`,
-          statusType: 'info',
-        }));
-        const savedActiveId = loadedTabs.some(t => t.id === parsed.activeTabId)
-          ? parsed.activeTabId
-          : loadedTabs[0].id;
-        return { loadedTabs, savedActiveId };
-      }
-    }
-  } catch (e) {
-    console.error('Failed to load session configs:', e);
-  }
-  return { loadedTabs: getDefaultTabs(), savedActiveId: 'slave-1' };
-}
-
-const { loadedTabs, savedActiveId } = loadSavedState();
-const tabs = ref<SessionTab[]>(loadedTabs);
-const activeTabId = ref<string>(savedActiveId);
-
-watch(
-  [tabs, activeTabId],
-  () => {
-    try {
-      const payload = {
-        activeTabId: activeTabId.value,
-        tabs: tabs.value.map(t => ({
-          id: t.id,
-          title: t.title,
-          connection: t.connection,
-          config: t.config,
-        })),
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch (e) {
-      console.error('Failed to save session configs:', e);
-    }
-  },
-  { deep: true }
-);
-const showSettings = ref<boolean>(false);
-const showAboutModal = ref<boolean>(false);
-const hasUpdate = ref<boolean>(false);
+const showSettings = ref(false);
+const showAboutModal = ref(false);
+const hasUpdate = ref(false);
 const updateInfo = ref<{ available: boolean; version?: string; body?: string } | null>(null);
-const appVersion = ref<string>('0.1.1');
-const showNewDeviceModal = ref<boolean>(false);
-const showConfirmModal = ref<boolean>(false);
-const showLogPanel = ref<boolean>(false);
+const appVersion = ref('0.1.2');
+const showNewDeviceModal = ref(false);
+const showConfirmModal = ref(false);
+const showLogPanel = ref(false);
 const tabToCloseId = ref<string | null>(null);
 
-const activeTab = computed(() => {
-  return tabs.value.find(t => t.id === activeTabId.value) || tabs.value[0];
-});
-
-const existingNames = computed(() => {
-  return tabs.value.map(t => t.title);
-});
+const activeTab = computed(() => store.activeTab);
 
 const newDeviceDefaultConfig = computed<ConnectionConfig>(() => ({
   role: 'Slave',
@@ -247,20 +49,96 @@ const newDeviceDefaultConfig = computed<ConnectionConfig>(() => ({
   retries: 3,
 }));
 
-const allLogs = computed(() => {
-  const aggregated: LogEntry[] = [];
-  for (const tab of tabs.value) {
-    aggregated.push(...tab.logs.map(log => ({ ...log, deviceName: tab.title })));
+const isGridWritable = computed(() => {
+  const tab = activeTab.value;
+  if (!tab || tab.busy) return false;
+  if (['0x02', '0x04'].includes(tab.config.functionCode)) return false;
+  if (tab.connection.role === 'Master') {
+    return Boolean(tab.connected && !tab.isPolling);
   }
-  return aggregated.sort((a, b) => b.timestampMs - a.timestampMs);
+  return true;
 });
 
-// Bound memory while retaining individual transfers in arrival order.
-function trimLogs(session: SessionTab) {
+onMounted(async () => {
+  try {
+    appVersion.value = await getVersion();
+  } catch {
+    // Keep fallback
+  }
+
+  setTimeout(async () => {
+    try {
+      const res = await UpdateService.checkForUpdates();
+      if (res.available) {
+        hasUpdate.value = true;
+        updateInfo.value = res;
+      }
+    } catch {
+      // Ignore background check errors
+    }
+  }, 3000);
+});
+
+function handleSelectTab(id: string) {
+  showSettings.value = false;
+  store.activeTabId = id;
+}
+
+function handleCreateDevice(newConnection: ConnectionConfig, name?: string) {
+  store.addTab(newConnection, name);
+  showNewDeviceModal.value = false;
+}
+
+function handleCloseTabRequest(id: string) {
+  if (store.tabs.length <= 1) return;
+  const tab = store.tabs.find(t => t.id === id);
+  if (!tab || tab.busy) return;
+  if (tab.connected) {
+    tabToCloseId.value = id;
+    showConfirmModal.value = true;
+  } else {
+    store.closeTab(id);
+  }
+}
+
+function handleCloseTab(id: string) {
+  store.closeTab(id);
+}
+
+async function handleConfirmCloseTab() {
+  const id = tabToCloseId.value;
+  showConfirmModal.value = false;
+  tabToCloseId.value = null;
+  if (!id) return;
+  const tabList = typeof store !== 'undefined' ? store.tabs : (typeof tabs !== 'undefined' ? tabs.value : []);
+  const tab = tabList.find((t: any) => t.id === id);
+  if (!tab || tab.busy) return;
+  tab.connectionVersion = (tab.connectionVersion ?? 0) + 1;
+  tab.busy = true;
+  try {
+    if (tab.connected) await ModbusService.disconnect(tab.id);
+    tab.connected = false;
+    if (typeof handleCloseTab === 'function') handleCloseTab(tab.id);
+  } catch (err) {
+    logFailure(tab, 'Disconnect', err);
+    tab.statusMessage = `[${tab.title}] Disconnect failed: ${err instanceof Error ? err.message : err}`;
+    tab.statusType = 'error';
+  } finally {
+    tab.busy = false;
+  }
+}
+
+function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
+  if (!activeTab.value || activeTab.value.connected || activeTab.value.busy) return;
+  store.updateConnection(activeTab.value.id, newConnection, newName);
+  showSettings.value = false;
+}
+
+function trimLogs(session: { logs: any[] }) {
   session.logs = session.logs.slice(0, 2000);
 }
 
-function broadcastLog(session: SessionTab, direction: 'TX' | 'RX', message: string, bytes: string, detail = false, startedAt?: number) {
+function broadcastLog(session: any, direction: 'TX' | 'RX', message: string, bytes: string, detail = false, startedAt?: number) {
   const timestampMs = Date.now();
   const level = /failed/i.test(message) ? 'error' : /restored/i.test(message) ? 'success' : 'info';
   const logEntry = {
@@ -276,11 +154,21 @@ function broadcastLog(session: SessionTab, direction: 'TX' | 'RX', message: stri
   trimLogs(session);
 }
 
-function logFailure(session: SessionTab, operation: string, error: unknown, startedAt?: number) {
+function logFailure(session: any, operation: string, error: unknown, startedAt?: number) {
   broadcastLog(session, 'RX', `${operation} Failed`, error instanceof Error ? error.message : String(error), false, startedAt);
 }
 
-function readTabRegisters(tab: SessionTab) {
+function captureTabRequest(tab: any) {
+  const connection = tab.connection;
+  const version = tab.connectionVersion;
+  const { unitId, functionCode, startAddress, count } = tab.config;
+  return () => (tab.connection.role === 'Slave' || tab.connected) && !tab.busy && tab.connection === connection
+    && tab.connectionVersion === version && tab.config.unitId === unitId
+    && tab.config.functionCode === functionCode && tab.config.startAddress === startAddress
+    && tab.config.count === count;
+}
+
+function readTabRegisters(tab: any) {
   return ModbusService.readRegisters(
     tab.id,
     tab.config.startAddress,
@@ -292,7 +180,7 @@ function readTabRegisters(tab: SessionTab) {
   );
 }
 
-function writeTabRegister(tab: SessionTab, address: number, value: number) {
+function writeTabRegister(tab: any, address: number, value: number) {
   return ModbusService.writeRegister(
     tab.id,
     address,
@@ -305,31 +193,7 @@ function writeTabRegister(tab: SessionTab, address: number, value: number) {
   );
 }
 
-function captureTabRequest(tab: SessionTab) {
-  const connection = tab.connection;
-  const version = tab.connectionVersion;
-  const { unitId, functionCode, startAddress, count } = tab.config;
-  return () => (tab.connection.role === 'Slave' || tab.connected) && !tab.busy && tab.connection === connection
-    && tab.connectionVersion === version && tab.config.unitId === unitId
-    && tab.config.functionCode === functionCode && tab.config.startAddress === startAddress
-    && tab.config.count === count;
-}
-
-watch(() => tabs.value.map(tab => ({ id: tab.id, unitId: tab.config.unitId, functionCode: tab.config.functionCode })), (current, previous) => {
-  for (const next of current) {
-    const before = previous.find(tab => tab.id === next.id);
-    if (before && (before.unitId !== next.unitId || before.functionCode !== next.functionCode)) {
-      const tab = tabs.value.find(tab => tab.id === next.id);
-      if (tab) {
-        tab.values = {};
-        tab.connectionVersion = (tab.connectionVersion ?? 0) + 1;
-      }
-    }
-  }
-});
-
-// Robust Multi-Tab Timer Management
-const tabTimers = new Map<string, { pollTimer?: ReturnType<typeof setInterval>; autoIncTimer?: ReturnType<typeof setInterval> }>();
+const tabTimers = new Map<string, any>();
 const pollingInFlight = new Set<string>();
 const incrementInFlight = new Set<string>();
 
@@ -342,11 +206,10 @@ function clearTabTimers(tabId: string) {
   }
 }
 
-function updateTabTimers(tab: SessionTab) {
+function updateTabTimers(tab: any) {
   clearTabTimers(tab.id);
-  const timers: { pollTimer?: ReturnType<typeof setInterval>; autoIncTimer?: ReturnType<typeof setInterval> } = {};
+  const timers: any = {};
 
-  // 1. Master Polling Timer
   if (tab.connection.role === 'Master' && tab.connected && tab.isPolling) {
     timers.pollTimer = setInterval(async () => {
       if (!tab.connected || !tab.isPolling) {
@@ -383,9 +246,6 @@ function updateTabTimers(tab: SessionTab) {
     }, tab.config.interval || 1000);
   }
 
-  // 2. Slave Auto Increment Timer
-  // Read the local slave memory so external master writes reach the grid.
-  // This is a local snapshot, not evidence of successful wire communication.
   if (tab.connection.role === 'Slave' && tab.connected && !tab.autoIncrement) {
     timers.pollTimer = setInterval(async () => {
       if (!tab.connected || tab.busy || tab.autoIncrement || pollingInFlight.has(tab.id)) return;
@@ -404,14 +264,14 @@ function updateTabTimers(tab: SessionTab) {
         }
       } catch (err) {
         if (isCurrent() && tabTimers.get(tab.id) === timers) {
-          if (!tab.statusMessage.startsWith(`[${tab.title}] Sync failed:`)) logFailure(tab, 'Sync', err);
+          logFailure(tab, 'Slave sync', err);
           tab.statusMessage = `[${tab.title}] Sync failed: ${err instanceof Error ? err.message : err}`;
           tab.statusType = 'error';
         }
       } finally {
         pollingInFlight.delete(tab.id);
       }
-    }, 1000);
+    }, tab.config.interval || 1000);
   }
 
   if (tab.connection.role === 'Slave' && tab.connected && tab.autoIncrement) {
@@ -456,7 +316,7 @@ function updateTabTimers(tab: SessionTab) {
               newValues[addr] = inc.word1;
             }
           } catch (err: any) {
-          if (!tab.statusMessage.startsWith(`[${tab.title}] Auto increment failed:`)) logFailure(tab, 'Auto increment', err);
+            if (!tab.statusMessage.startsWith(`[${tab.title}] Auto increment failed:`)) logFailure(tab, 'Auto increment', err);
             tab.statusMessage = `[${tab.title}] Auto increment failed: ${err?.message || err}`;
             tab.statusType = 'error';
             completed = false;
@@ -484,127 +344,6 @@ function updateTabTimers(tab: SessionTab) {
   }
 
   tabTimers.set(tab.id, timers);
-}
-
-// Watch tabs state deeply and manage timers for every tab independently
-watch(
-  () => tabs.value.map(t => ({
-    id: t.id,
-    connected: t.connected,
-    isPolling: t.isPolling,
-    autoIncrement: t.autoIncrement,
-    role: t.connection.role,
-    interval: t.config.interval,
-    startAddress: t.config.startAddress,
-    count: t.config.count,
-    dataType: t.config.dataType,
-    format: t.config.format,
-    byteOrder: t.config.byteOrder,
-    functionCode: t.config.functionCode,
-    unitId: t.config.unitId,
-  })),
-  (tabStates) => {
-    for (const tabState of tabStates) {
-      const realTab = tabs.value.find(t => t.id === tabState.id);
-      if (realTab) {
-        // Disconnection automatically shuts down polling and autoIncrement timers
-        if (!realTab.connected) {
-          if (realTab.isPolling) realTab.isPolling = false;
-          if (realTab.autoIncrement) realTab.autoIncrement = false;
-          pollingInFlight.delete(realTab.id);
-          incrementInFlight.delete(realTab.id);
-        }
-        updateTabTimers(realTab);
-      }
-    }
-  },
-  { deep: true, immediate: true }
-);
-
-onUnmounted(() => {
-  if (unlistenTraffic) {
-    unlistenTraffic();
-  }
-  for (const tabId of tabTimers.keys()) {
-    clearTabTimers(tabId);
-  }
-});
-
-function handleSelectTab(id: string) {
-  showSettings.value = false;
-  activeTabId.value = id;
-}
-
-function handleCreateDevice(newConnection: ConnectionConfig, name?: string) {
-  const role = newConnection.role || 'Slave';
-  const deviceName = name?.trim() || (role === 'Master' ? 'Master 1' : 'Slave 1');
-  const newId = `${role.toLowerCase()}-${Date.now()}`;
-  tabs.value.push({
-    id: newId,
-    title: deviceName,
-    connection: { ...newConnection },
-    connected: false,
-    config: {
-      unitId: 1,
-      functionCode: '0x03',
-      startAddress: 0,
-      count: 40,
-      dataType: 'Int16',
-      format: 'Dec',
-      byteOrder: 'ABCD',
-      interval: 1000,
-      raw: false,
-    },
-    values: {},
-    logs: [],
-    statusMessage: `[${deviceName}] Idle.`,
-    statusType: 'info',
-  });
-  activeTabId.value = newId;
-  showNewDeviceModal.value = false;
-}
-
-function handleCloseTabRequest(id: string) {
-  if (tabs.value.length <= 1) return;
-  const tab = tabs.value.find(t => t.id === id);
-  if (!tab) return;
-  if (tab.busy) return;
-  if (tab.connected) {
-    tabToCloseId.value = id;
-    showConfirmModal.value = true;
-  } else {
-    handleCloseTab(id);
-  }
-}
-
-async function handleConfirmCloseTab() {
-  const id = tabToCloseId.value;
-  showConfirmModal.value = false;
-  tabToCloseId.value = null;
-  const tab = tabs.value.find(t => t.id === id);
-  if (!tab || tab.busy) return;
-  tab.connectionVersion = (tab.connectionVersion ?? 0) + 1;
-  tab.busy = true;
-  try {
-    if (tab.connected) await ModbusService.disconnect(tab.id);
-    tab.connected = false;
-    handleCloseTab(tab.id);
-  } catch (err) {
-    logFailure(tab, 'Disconnect', err);
-    tab.statusMessage = `[${tab.title}] Disconnect failed: ${err instanceof Error ? err.message : err}`;
-    tab.statusType = 'error';
-  } finally {
-    tab.busy = false;
-  }
-}
-
-function handleCloseTab(id: string) {
-  if (tabs.value.length <= 1) return;
-  clearTabTimers(id);
-  tabs.value = tabs.value.filter(t => t.id !== id);
-  if (activeTabId.value === id) {
-    activeTabId.value = tabs.value[0].id;
-  }
 }
 
 async function handleToggleConnect() {
@@ -694,16 +433,6 @@ async function handleFillRandom() {
   }
 }
 
-function handleToggleAutoIncrement() {
-  if (!activeTab.value || !activeTab.value.connected || activeTab.value.busy) return;
-  activeTab.value.autoIncrement = !activeTab.value.autoIncrement;
-}
-
-function handleTogglePoll() {
-  if (!activeTab.value || !activeTab.value.connected || activeTab.value.busy) return;
-  activeTab.value.isPolling = !activeTab.value.isPolling;
-}
-
 async function handleReadOnce() {
   const operationStarted = Date.now();
   const tab = activeTab.value;
@@ -728,16 +457,6 @@ async function handleReadOnce() {
     broadcastLog(tab, 'RX', `Read (${tab.config.functionCode}) Failed`, String(err), false, operationStarted);
   }
 }
-
-const isGridWritable = computed(() => {
-  const tab = activeTab.value;
-  if (!tab || tab.busy) return false;
-  if (['0x02', '0x04'].includes(tab.config.functionCode)) return false;
-  if (tab.connection.role === 'Master') {
-    return Boolean(tab.connected && !tab.isPolling);
-  }
-  return true;
-});
 
 async function handleUpdateCell(address: number, value: number) {
   const operationStarted = Date.now();
@@ -794,23 +513,13 @@ async function handleUpdateCellPair(address1: number, value1: number, address2: 
     tab.statusType = 'error';
   }
 }
-
-function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
-  if (!activeTab.value || activeTab.value.connected || activeTab.value.busy) return;
-  activeTab.value.connection = newConnection;
-  if (newName && newName.trim()) {
-    activeTab.value.title = newName.trim();
-  }
-}
-
-
 </script>
 
 <template>
   <div class="h-screen w-screen flex flex-col bg-gray-100 font-sans overflow-hidden">
     <TabBar
-      :tabs="tabs"
-      :activeTabId="activeTabId"
+      :tabs="store.tabs"
+      :activeTabId="store.activeTabId"
       @select-tab="handleSelectTab"
       @add-tab="showNewDeviceModal = true"
       @close-tab="handleCloseTabRequest"
@@ -830,20 +539,21 @@ function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
       :functionCode="activeTab.config.functionCode"
       :autoIncrement="activeTab.autoIncrement"
       :isPolling="activeTab.isPolling"
-      @toggle-connect="handleToggleConnect"
+      @toggle-connect="store.toggleConnect(activeTab.id)"
       @open-settings="showSettings = true"
-      @toggle-auto-increment="handleToggleAutoIncrement"
-      @fill-random="handleFillRandom"
-      @toggle-poll="handleTogglePoll"
-      @read-once="handleReadOnce"
+      @toggle-auto-increment="store.toggleAutoIncrement(activeTab.id)"
+      @fill-random="store.fillRandom(activeTab.id)"
+      @toggle-poll="store.togglePolling(activeTab.id)"
+      @read-once="store.readOnce(activeTab.id)"
     />
 
     <ConfigRow
       v-if="activeTab"
-      v-model:config="activeTab.config"
+      :config="activeTab.config"
       :connected="activeTab.connected"
       :busy="activeTab.busy"
       :role="activeTab.connection.role"
+      @update:config="cfg => store.updateConfig(activeTab.id, cfg)"
     />
 
     <DataGrid
@@ -858,8 +568,8 @@ function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
       :byteOrder="activeTab.config.byteOrder"
       :functionCode="activeTab.config.functionCode"
       :raw="activeTab.config.raw"
-      @update-cell="handleUpdateCell"
-      @update-cell-pair="handleUpdateCellPair"
+      @update-cell="(addr, val) => store.writeCell(activeTab.id, addr, val)"
+      @update-cell-pair="(a1, v1, a2, v2) => store.writeCellPair(activeTab.id, a1, v1, a2, v2)"
     />
 
     <Transition
@@ -872,9 +582,9 @@ function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
     >
       <TrafficLog
         v-if="activeTab && showLogPanel"
-        :logs="allLogs"
-        :devices="tabs.map(tab => ({ id: tab.id, title: tab.title }))"
-        @clear="device => tabs.forEach(tab => { if (!device || tab.id === device) tab.logs = []; })"
+        :logs="store.allLogs"
+        :devices="store.tabs.map(tab => ({ id: tab.id, title: tab.title }))"
+        @clear="store.clearLogs"
         @close="showLogPanel = false"
       />
     </Transition>
@@ -883,7 +593,7 @@ function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
       v-if="activeTab"
       :message="activeTab.statusMessage"
       :type="activeTab.statusType"
-      :logCount="allLogs.length"
+      :logCount="store.allLogs.length"
       :showLogPanel="showLogPanel"
       :language="language"
       :app-version="appVersion"
@@ -898,7 +608,7 @@ function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
       :show="showSettings"
       :config="activeTab.connection"
       :device-name="activeTab.title"
-      :existing-names="existingNames"
+      :existing-names="store.existingNames"
       mode="edit"
       @close="showSettings = false"
       @save="handleSaveSettings"
@@ -907,7 +617,7 @@ function handleSaveSettings(newConnection: ConnectionConfig, newName?: string) {
     <SettingsModal
       :show="showNewDeviceModal"
       :config="newDeviceDefaultConfig"
-      :existing-names="existingNames"
+      :existing-names="store.existingNames"
       mode="create"
       @close="showNewDeviceModal = false"
       @save="handleCreateDevice"
