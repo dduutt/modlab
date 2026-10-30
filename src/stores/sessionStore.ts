@@ -344,6 +344,7 @@ export const useSessionStore = defineStore('session', () => {
     if (tab.isPolling || tab.autoIncrement || isReadonlyFc(tab.config.functionCode)) return;
     const session = getOrCreateSession(tabId);
     const started = Date.now();
+    tab.busy = true;
     addLog(tab, 'TX', `Write Register (Addr: ${address})`, `Val: ${value}`);
     try {
       await session.writeRegister(address, value);
@@ -355,6 +356,8 @@ export const useSessionStore = defineStore('session', () => {
       tab.statusMessage = `[${tab.title}] Write failed: ${err?.message || err}`;
       tab.statusType = 'error';
       addLog(tab, 'RX', 'Write Failed', String(err), false, started);
+    } finally {
+      tab.busy = false;
     }
   }
 
@@ -370,6 +373,7 @@ export const useSessionStore = defineStore('session', () => {
     if (tab.isPolling || tab.autoIncrement || isReadonlyFc(tab.config.functionCode)) return;
     const session = getOrCreateSession(tabId);
     const started = Date.now();
+    tab.busy = true;
     addLog(
       tab,
       'TX',
@@ -394,6 +398,8 @@ export const useSessionStore = defineStore('session', () => {
       tab.statusMessage = `[${tab.title}] Write pair failed: ${err?.message || err}`;
       tab.statusType = 'error';
       addLog(tab, 'RX', 'Write Pair Failed', String(err), false, started);
+    } finally {
+      tab.busy = false;
     }
   }
 
@@ -403,6 +409,7 @@ export const useSessionStore = defineStore('session', () => {
     if (tab.isPolling || tab.autoIncrement || isReadonlyFc(tab.config.functionCode)) return;
     const session = getOrCreateSession(tabId);
     const started = Date.now();
+    tab.busy = true;
     addLog(
       tab,
       'TX',
@@ -425,6 +432,8 @@ export const useSessionStore = defineStore('session', () => {
       tab.statusMessage = `[${tab.title}] Random fill failed: ${err?.message || err}`;
       tab.statusType = 'error';
       addLog(tab, 'RX', 'Random Fill Failed', String(err), false, started);
+    } finally {
+      tab.busy = false;
     }
   }
 

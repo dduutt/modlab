@@ -52,24 +52,34 @@ export function useSession(sessionId: string, options?: UseSessionOptions) {
     return null;
   });
 
+  let spawnPromise: Promise<void> | null = null;
+
   async function ensureSpawned() {
     if (isSpawned.value) return;
-    try {
-      await ModbusService.spawnSession(sessionId, (event: SessionEvent) => {
-        if (event.type === 'StateChanged') {
-          fsmState.value = event.payload;
-          options?.onStateChanged?.(event.payload);
-        } else if (event.type === 'DataUpdated') {
-          options?.onDataUpdated?.(event.payload);
-        } else if (event.type === 'PollError') {
-          options?.onPollError?.(event.payload);
-        }
-      });
-      isSpawned.value = true;
-    } catch (err) {
-      console.error(`[useSession] spawn failed for ${sessionId}:`, err);
-      fsmState.value = { Error: String(err) };
-    }
+    if (spawnPromise) return spawnPromise;
+
+    spawnPromise = (async () => {
+      try {
+        await ModbusService.spawnSession(sessionId, (event: SessionEvent) => {
+          if (event.type === 'StateChanged') {
+            fsmState.value = event.payload;
+            options?.onStateChanged?.(event.payload);
+          } else if (event.type === 'DataUpdated') {
+            options?.onDataUpdated?.(event.payload);
+          } else if (event.type === 'PollError') {
+            options?.onPollError?.(event.payload);
+          }
+        });
+        isSpawned.value = true;
+      } catch (err) {
+        console.error(`[useSession] spawn failed for ${sessionId}:`, err);
+        fsmState.value = { Error: String(err) };
+      } finally {
+        spawnPromise = null;
+      }
+    })();
+
+    return spawnPromise;
   }
 
   async function dispatch(cmd: SessionCommand) {

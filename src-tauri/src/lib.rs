@@ -28,8 +28,8 @@ async fn spawn_session_native(
         drop(old); // Dropping cmd_tx causes old actor to exit loop and terminate
     }
 
-    let (cmd_tx, cmd_rx) = mpsc::channel(32);
-    let (evt_tx, mut evt_rx) = mpsc::channel(32);
+    let (cmd_tx, cmd_rx) = mpsc::channel(64);
+    let (evt_tx, mut evt_rx) = mpsc::channel(128);
     let clients = Arc::new(std::sync::RwLock::new(HashMap::new()));
 
     // 将 Actor 发出的内部事件转发到 Tauri IPC 专属通道

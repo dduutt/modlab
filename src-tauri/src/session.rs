@@ -163,18 +163,14 @@ impl Service for SlaveService {
             Request::ReadHoldingRegisters(start, count) => {
                 check_bounds(start, count, 125).map(|_| {
                     let mem = self.memory.read().unwrap();
-                    let values: Vec<u16> = (start..start + count)
-                        .map(|addr| *mem.get(&addr).unwrap_or(&0))
-                        .collect();
+                    let values: Vec<u16> = (0..count).map(|i| *mem.get(&(start + i)).unwrap_or(&0)).collect();
                     Response::ReadHoldingRegisters(values)
                 })
             }
             Request::ReadInputRegisters(start, count) => {
                 check_bounds(start, count, 125).map(|_| {
                     let mem = self.memory.read().unwrap();
-                    let values: Vec<u16> = (start..start + count)
-                        .map(|addr| *mem.get(&addr).unwrap_or(&0))
-                        .collect();
+                    let values: Vec<u16> = (0..count).map(|i| *mem.get(&(start + i)).unwrap_or(&0)).collect();
                     Response::ReadInputRegisters(values)
                 })
             }
@@ -210,18 +206,14 @@ impl Service for SlaveService {
             Request::ReadCoils(start, count) => {
                 check_bounds(start, count, 2000).map(|_| {
                     let mem = self.memory.read().unwrap();
-                    let values: Vec<bool> = (start..start + count)
-                        .map(|addr| mem.get(&addr).copied().unwrap_or(0) != 0)
-                        .collect();
+                    let values: Vec<bool> = (0..count).map(|i| mem.get(&(start + i)).copied().unwrap_or(0) != 0).collect();
                     Response::ReadCoils(values)
                 })
             }
             Request::ReadDiscreteInputs(start, count) => {
                 check_bounds(start, count, 2000).map(|_| {
                     let mem = self.memory.read().unwrap();
-                    let values: Vec<bool> = (start..start + count)
-                        .map(|addr| mem.get(&addr).copied().unwrap_or(0) != 0)
-                        .collect();
+                    let values: Vec<bool> = (0..count).map(|i| mem.get(&(start + i)).copied().unwrap_or(0) != 0).collect();
                     Response::ReadDiscreteInputs(values)
                 })
             }
@@ -1085,6 +1077,31 @@ mod tests {
         }
 
         assert_eq!(clients.read().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_slave_high_address_boundary() {
+        let memory = Arc::new(RwLock::new(HashMap::new()));
+        memory.write().unwrap().insert(65535, 9999);
+        let (evt_tx, _evt_rx) = mpsc::channel(32);
+        let clients = Arc::new(RwLock::new(HashMap::new()));
+        let service = SlaveService {
+            client_id: 1,
+            _unit_id: 1,
+            memory: memory.clone(),
+            event_sender: evt_tx,
+            clients: clients.clone(),
+            _guard: Arc::new(ClientDropGuard { client_id: 1, clients }),
+        };
+
+        let res = service.call(Request::ReadHoldingRegisters(65500, 36)).await;
+        assert!(res.is_ok());
+        if let Ok(Response::ReadHoldingRegisters(vals)) = res {
+            assert_eq!(vals.len(), 36);
+            assert_eq!(vals[35], 9999);
+        } else {
+            panic!("Unexpected response");
+        }
     }
 
     #[test]
