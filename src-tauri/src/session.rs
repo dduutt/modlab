@@ -50,6 +50,16 @@ pub struct WritePayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataGenConfig {
+    pub start_address: u16,
+    pub count: u16,
+    pub function_code: String,
+    pub data_type: String,
+    pub byte_order: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
 pub enum SessionCommand {
     Connect(ConnectionConfig),
@@ -60,6 +70,13 @@ pub enum SessionCommand {
     ReadOnce,
     WriteRegister(WritePayload),
     WriteRegistersBatch(HashMap<u16, u16>),
+    StartAutoIncrement {
+        #[serde(rename = "intervalMs")]
+        interval_ms: u64,
+        config: DataGenConfig,
+    },
+    StopAutoIncrement,
+    FillRandom(DataGenConfig),
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -227,6 +244,9 @@ pub struct SessionActor {
     clients: Arc<RwLock<HashMap<usize, TcpClientInfo>>>,
     is_polling: bool,
     poll_interval: u64,
+    is_auto_incrementing: bool,
+    auto_inc_interval: u64,
+    auto_inc_config: Option<DataGenConfig>,
 }
 
 impl SessionActor {
@@ -248,6 +268,9 @@ impl SessionActor {
             clients,
             is_polling: false,
             poll_interval: 1000,
+            is_auto_incrementing: false,
+            auto_inc_interval: 1000,
+            auto_inc_config: None,
         }
     }
 
@@ -262,19 +285,25 @@ impl SessionActor {
     }
 
     pub async fn run(mut self) {
-        let mut interval = time::interval(Duration::from_millis(self.poll_interval));
-        interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        let mut poll_interval = time::interval(Duration::from_millis(self.poll_interval));
+        poll_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+        let mut auto_inc_interval = time::interval(Duration::from_millis(self.auto_inc_interval.max(100)));
+        auto_inc_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
                 cmd_opt = self.receiver.recv() => {
                     match cmd_opt {
-                        Some(cmd) => self.handle_command(cmd, &mut interval).await,
+                        Some(cmd) => self.handle_command(cmd, &mut poll_interval, &mut auto_inc_interval).await,
                         None => break, // Channel dropped by frontend, exit cleanly
                     }
                 }
-                _ = interval.tick(), if self.is_polling && self.state == FsmState::Connected => {
+                _ = poll_interval.tick(), if self.is_polling && self.state == FsmState::Connected => {
                     self.execute_poll().await;
+                }
+                _ = auto_inc_interval.tick(), if self.is_auto_incrementing => {
+                    self.execute_auto_increment().await;
                 }
             }
         }
@@ -283,6 +312,7 @@ impl SessionActor {
     }
 
     async fn cleanup(&mut self) {
+        self.is_auto_incrementing = false;
         if let Some(stop) = self.slave_stop.take() {
             let _ = stop.send(());
         }
@@ -294,7 +324,12 @@ impl SessionActor {
         }
     }
 
-    async fn handle_command(&mut self, cmd: SessionCommand, interval: &mut time::Interval) {
+    async fn handle_command(
+        &mut self,
+        cmd: SessionCommand,
+        interval: &mut time::Interval,
+        auto_inc_interval: &mut time::Interval,
+    ) {
         match cmd {
             SessionCommand::Connect(config) => {
                 self.is_polling = false;
@@ -563,6 +598,22 @@ impl SessionActor {
                     }
                 }
             }
+            SessionCommand::StartAutoIncrement { interval_ms, config } => {
+                let safe_interval = interval_ms.max(100);
+                self.auto_inc_interval = safe_interval;
+                self.auto_inc_config = Some(config);
+                self.is_auto_incrementing = true;
+                *auto_inc_interval = time::interval(Duration::from_millis(safe_interval));
+                auto_inc_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+                auto_inc_interval.tick().await;
+            }
+            SessionCommand::StopAutoIncrement => {
+                self.is_auto_incrementing = false;
+                self.auto_inc_config = None;
+            }
+            SessionCommand::FillRandom(config) => {
+                self.execute_fill_random(&config).await;
+            }
         }
     }
 
@@ -685,6 +736,249 @@ impl SessionActor {
                 let _ = self.event_sender.send(SessionEvent::PollError(format!("Read timeout ({}ms)", timeout_dur.as_millis()))).await;
             }
         }
+    }
+
+    async fn execute_auto_increment(&mut self) {
+        let config = match &self.auto_inc_config {
+            Some(cfg) => cfg.clone(),
+            None => return,
+        };
+
+        if config.count == 0 {
+            return;
+        }
+
+        let is_coil = is_coil_function(&config.function_code);
+        let is_32 = !is_coil && is_32bit_datatype(&config.data_type);
+        let step = if is_32 { 2 } else { 1 };
+
+        let mut update_map = HashMap::new();
+        {
+            let mut mem = self.memory.write().unwrap();
+            let start = config.start_address;
+            let end = (start as u32 + config.count as u32).min(65536) as u16;
+
+            let mut addr = start;
+            while addr < end {
+                if is_coil {
+                    let cur = *mem.get(&addr).unwrap_or(&0);
+                    let next = if cur == 0 { 1 } else { 0 };
+                    mem.insert(addr, next);
+                    update_map.insert(addr, next);
+                } else if is_32 {
+                    if addr + 1 >= end {
+                        break;
+                    }
+                    let raw1 = *mem.get(&addr).unwrap_or(&0);
+                    let raw2 = *mem.get(&(addr + 1)).unwrap_or(&0);
+                    let raw_bytes = [
+                        (raw1 >> 8) as u8,
+                        (raw1 & 0xff) as u8,
+                        (raw2 >> 8) as u8,
+                        (raw2 & 0xff) as u8,
+                    ];
+                    let swapped = swap_bytes_32(raw_bytes, &config.byte_order);
+
+                    let (w1, w2) = match config.data_type.as_str() {
+                        "Float32" => {
+                            let val = f32::from_be_bytes(swapped);
+                            let next = if val.is_nan() || val.is_infinite() { 1.0 } else { val + 1.0 };
+                            let out_bytes = unswap_bytes_32(next.to_be_bytes(), &config.byte_order);
+                            (
+                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
+                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
+                            )
+                        }
+                        "Int32" => {
+                            let val = i32::from_be_bytes(swapped);
+                            let next = val.wrapping_add(1);
+                            let out_bytes = unswap_bytes_32(next.to_be_bytes(), &config.byte_order);
+                            (
+                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
+                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
+                            )
+                        }
+                        _ => {
+                            let val = u32::from_be_bytes(swapped);
+                            let next = val.wrapping_add(1);
+                            let out_bytes = unswap_bytes_32(next.to_be_bytes(), &config.byte_order);
+                            (
+                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
+                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
+                            )
+                        }
+                    };
+
+                    mem.insert(addr, w1);
+                    mem.insert(addr + 1, w2);
+                    update_map.insert(addr, w1);
+                    update_map.insert(addr + 1, w2);
+                } else if config.data_type == "Int16" {
+                    let cur = *mem.get(&addr).unwrap_or(&0) as i16;
+                    let next = cur.wrapping_add(1) as u16;
+                    mem.insert(addr, next);
+                    update_map.insert(addr, next);
+                } else {
+                    let cur = *mem.get(&addr).unwrap_or(&0);
+                    let next = cur.wrapping_add(1);
+                    mem.insert(addr, next);
+                    update_map.insert(addr, next);
+                }
+
+                addr = addr.saturating_add(step);
+            }
+        }
+
+        if !update_map.is_empty() {
+            let _ = self.event_sender.send(SessionEvent::DataUpdated(update_map)).await;
+        }
+    }
+
+    async fn execute_fill_random(&mut self, config: &DataGenConfig) {
+        if config.count == 0 {
+            return;
+        }
+
+        let is_coil = is_coil_function(&config.function_code);
+        let is_32 = !is_coil && is_32bit_datatype(&config.data_type);
+        let step = if is_32 { 2 } else { 1 };
+
+        let mut rng = SimpleRng::new();
+        let mut update_map = HashMap::new();
+        {
+            let mut mem = self.memory.write().unwrap();
+            let start = config.start_address;
+            let end = (start as u32 + config.count as u32).min(65536) as u16;
+
+            let mut addr = start;
+            while addr < end {
+                if is_coil {
+                    let val = (rng.next_u64() % 2) as u16;
+                    mem.insert(addr, val);
+                    update_map.insert(addr, val);
+                } else if is_32 {
+                    if addr + 1 >= end {
+                        break;
+                    }
+                    let (w1, w2) = match config.data_type.as_str() {
+                        "Float32" => {
+                            let val = rng.gen_f32(-5000.0, 5000.0);
+                            let rounded = (val * 100.0).round() / 100.0;
+                            let out_bytes = unswap_bytes_32(rounded.to_be_bytes(), &config.byte_order);
+                            (
+                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
+                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
+                            )
+                        }
+                        "Int32" => {
+                            let val = rng.gen_i32(-100000, 100000);
+                            let out_bytes = unswap_bytes_32(val.to_be_bytes(), &config.byte_order);
+                            (
+                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
+                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
+                            )
+                        }
+                        _ => {
+                            let val = rng.gen_u32(200000);
+                            let out_bytes = unswap_bytes_32(val.to_be_bytes(), &config.byte_order);
+                            (
+                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
+                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
+                            )
+                        }
+                    };
+                    mem.insert(addr, w1);
+                    mem.insert(addr + 1, w2);
+                    update_map.insert(addr, w1);
+                    update_map.insert(addr + 1, w2);
+                } else {
+                    let val = rng.gen_range_u16(1000);
+                    mem.insert(addr, val);
+                    update_map.insert(addr, val);
+                }
+
+                addr = addr.saturating_add(step);
+            }
+        }
+
+        if !update_map.is_empty() {
+            let _ = self.event_sender.send(SessionEvent::DataUpdated(update_map)).await;
+        }
+    }
+}
+
+fn is_coil_function(fc: &str) -> bool {
+    let lower = fc.trim().to_lowercase();
+    matches!(lower.as_str(), "0x01" | "0x02" | "1" | "2" | "coils" | "discrete_inputs")
+}
+
+fn is_32bit_datatype(dt: &str) -> bool {
+    matches!(dt, "Float32" | "Int32" | "UInt32")
+}
+
+fn swap_bytes_32(bytes: [u8; 4], byte_order: &str) -> [u8; 4] {
+    let [a, b, c, d] = bytes;
+    match byte_order {
+        "CDAB" => [c, d, a, b],
+        "BADC" => [b, a, d, c],
+        "DCBA" => [d, c, b, a],
+        _ => [a, b, c, d],
+    }
+}
+
+fn unswap_bytes_32(bytes: [u8; 4], byte_order: &str) -> [u8; 4] {
+    let [a, b, c, d] = bytes;
+    match byte_order {
+        "CDAB" => [c, d, a, b],
+        "BADC" => [b, a, d, c],
+        "DCBA" => [d, c, b, a],
+        _ => [a, b, c, d],
+    }
+}
+
+struct SimpleRng(u64);
+
+impl SimpleRng {
+    fn new() -> Self {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        Self(if seed == 0 { 0x853c49e6748fea9b } else { seed })
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    fn gen_range_u16(&mut self, max: u16) -> u16 {
+        if max == 0 {
+            return 0;
+        }
+        (self.next_u64() % (max as u64)) as u16
+    }
+
+    fn gen_f32(&mut self, min: f32, max: f32) -> f32 {
+        let norm = (self.next_u64() & 0xffffff) as f32 / 16777215.0;
+        min + norm * (max - min)
+    }
+
+    fn gen_i32(&mut self, min: i32, max: i32) -> i32 {
+        let range = (max as i64 - min as i64 + 1) as u64;
+        if range == 0 {
+            return min;
+        }
+        let val = (self.next_u64() % range) as i64;
+        (min as i64 + val) as i32
+    }
+
+    fn gen_u32(&mut self, max: u32) -> u32 {
+        (self.next_u64() % (max as u64 + 1)) as u32
     }
 }
 
@@ -829,5 +1123,53 @@ mod tests {
         // 7. Clean up
         slave_cmd_tx.send(SessionCommand::Disconnect).await.unwrap();
         master_cmd_tx.send(SessionCommand::Disconnect).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_slave_auto_increment_and_random() {
+        let slave_clients = Arc::new(RwLock::new(HashMap::new()));
+        let (slave_cmd_tx, slave_cmd_rx) = mpsc::channel(32);
+        let (slave_evt_tx, mut slave_evt_rx) = mpsc::channel(32);
+        let slave_actor = SessionActor::new("slave_inc_test".into(), slave_cmd_rx, slave_evt_tx, slave_clients);
+        tokio::spawn(slave_actor.run());
+
+        // 1. Test FillRandom
+        let gen_cfg = DataGenConfig {
+            start_address: 0,
+            count: 10,
+            function_code: "0x03".into(),
+            data_type: "Int16".into(),
+            byte_order: "ABCD".into(),
+        };
+        slave_cmd_tx.send(SessionCommand::FillRandom(gen_cfg.clone())).await.unwrap();
+        let evt = slave_evt_rx.recv().await.unwrap();
+        match evt {
+            SessionEvent::DataUpdated(map) => {
+                assert_eq!(map.len(), 10);
+                for i in 0..10 {
+                    assert!(map.contains_key(&i));
+                }
+            }
+            other => panic!("Expected DataUpdated from FillRandom, got {:?}", other),
+        }
+
+        // 2. Test StartAutoIncrement with fast 100ms interval
+        slave_cmd_tx.send(SessionCommand::StartAutoIncrement {
+            interval_ms: 100,
+            config: gen_cfg,
+        }).await.unwrap();
+
+        // Receive tick update
+        let evt = tokio::time::timeout(Duration::from_millis(500), slave_evt_rx.recv()).await.unwrap().unwrap();
+        match evt {
+            SessionEvent::DataUpdated(map) => {
+                assert_eq!(map.len(), 10);
+            }
+            other => panic!("Expected DataUpdated from AutoIncrement, got {:?}", other),
+        }
+
+        // 3. Stop auto increment
+        slave_cmd_tx.send(SessionCommand::StopAutoIncrement).await.unwrap();
+        slave_cmd_tx.send(SessionCommand::Disconnect).await.unwrap();
     }
 }

@@ -115,10 +115,7 @@ function handleCellRightClick(addr: number) {
 <template>
   <div class="flex-1 p-4 overflow-auto bg-gray-50/50 relative">
     <div
-      :class="[
-        'bg-white border border-gray-200 rounded-xl shadow-2xs overflow-hidden transition-all duration-200',
-        !props.writable ? 'opacity-60 grayscale-[50%] select-none cursor-not-allowed' : ''
-      ]"
+      class="bg-white border border-gray-200 rounded-xl shadow-2xs overflow-hidden transition-all duration-200"
     >
       <Table class="w-full text-sm text-center border-collapse">
         <TableHeader>
@@ -163,7 +160,7 @@ function handleCellRightClick(addr: number) {
                 @contextmenu.prevent="props.writable ? handleCellRightClick(rowAddr + colOffset - 1) : null"
                 :class="[
                   'w-full h-full py-2.5 px-2 text-gray-800 transition-colors flex flex-col items-center justify-center leading-tight',
-                  props.writable ? 'hover:bg-blue-100/40 cursor-default' : 'cursor-not-allowed'
+                  props.writable ? 'hover:bg-blue-100/40 cursor-default' : 'cursor-default'
                 ]"
               >
                 <span>{{ getPrimaryCellText(rowAddr + colOffset - 1) }}</span>

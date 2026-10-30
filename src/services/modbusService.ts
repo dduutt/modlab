@@ -29,6 +29,14 @@ export interface WritePayload {
   value: number;
 }
 
+export interface DataGenConfig {
+  startAddress: number;
+  count: number;
+  functionCode: string;
+  dataType: string;
+  byteOrder: string;
+}
+
 export type SessionCommand =
   | { type: 'Connect'; payload: ConnectionConfig }
   | { type: 'Disconnect' }
@@ -37,7 +45,10 @@ export type SessionCommand =
   | { type: 'StopPolling' }
   | { type: 'ReadOnce' }
   | { type: 'WriteRegister'; payload: WritePayload }
-  | { type: 'WriteRegistersBatch'; payload: Record<number, number> };
+  | { type: 'WriteRegistersBatch'; payload: Record<number, number> }
+  | { type: 'StartAutoIncrement'; payload: { intervalMs: number; config: DataGenConfig } }
+  | { type: 'StopAutoIncrement' }
+  | { type: 'FillRandom'; payload: DataGenConfig };
 
 export type SessionEvent =
   | { type: 'StateChanged'; payload: FsmState }

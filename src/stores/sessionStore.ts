@@ -4,7 +4,6 @@ import type { ConnectionConfig } from '../components/SettingsModal.vue';
 import type { ModbusConfig } from '../components/ConfigRow.vue';
 import type { LogEntry } from '../components/TrafficLog.vue';
 import { appendLog } from '../utils/logging';
-import { generateRandomRegisters, incrementFormattedValue } from '../utils/modbusFormatter';
 import { useSession } from '../composables/useSession';
 
 export interface SessionTab {
@@ -121,7 +120,6 @@ export const useSessionStore = defineStore('session', () => {
   const activeTabId = ref<string>(savedActiveId);
 
   const sessions = new Map<string, ReturnType<typeof useSession>>();
-  const autoIncTimers = new Map<string, ReturnType<typeof setInterval>>();
 
   // Auto-save configuration to localStorage
   watch(
@@ -255,60 +253,28 @@ export const useSessionStore = defineStore('session', () => {
     return session;
   }
 
-  function stopAutoIncrement(tabId: string) {
-    const timer = autoIncTimers.get(tabId);
-    if (timer) {
-      clearInterval(timer);
-      autoIncTimers.delete(tabId);
+  function buildDataGenConfig(cfg: ModbusConfig) {
+    return {
+      startAddress: cfg.startAddress,
+      count: cfg.count,
+      functionCode: cfg.functionCode,
+      dataType: cfg.dataType,
+      byteOrder: cfg.byteOrder,
+    };
+  }
+
+  async function stopAutoIncrement(tabId: string) {
+    const session = sessions.get(tabId);
+    if (session) {
+      await session.stopAutoIncrement();
     }
   }
 
-  function startAutoIncrement(tabId: string) {
-    stopAutoIncrement(tabId);
+  async function startAutoIncrement(tabId: string) {
     const tab = tabs.value.find(t => t.id === tabId);
     if (!tab || !tab.connected || ['0x02', '0x04'].includes(tab.config.functionCode)) return;
-
-    const timer = setInterval(async () => {
-      const currentTab = tabs.value.find(t => t.id === tabId);
-      if (!currentTab || !currentTab.connected || !currentTab.autoIncrement || ['0x02', '0x04'].includes(currentTab.config.functionCode)) {
-        stopAutoIncrement(tabId);
-        return;
-      }
-
-      const session = getOrCreateSession(tabId);
-      const cfg = currentTab.config;
-      const isCoil = cfg.functionCode === '0x01' || cfg.functionCode === '0x02';
-      const is32 =
-        !isCoil && (cfg.dataType === 'Float32' || cfg.dataType === 'Int32' || cfg.dataType === 'UInt32');
-      const step = is32 ? 2 : 1;
-      const updatedBatch: Record<number, number> = {};
-
-      for (let addr = cfg.startAddress; addr < cfg.startAddress + cfg.count; addr += step) {
-        if (is32 && addr + 1 >= cfg.startAddress + cfg.count) break;
-        const raw1 = currentTab.values[addr] ?? 0;
-        const raw2 = is32 ? (currentTab.values[addr + 1] ?? 0) : undefined;
-        const inc = incrementFormattedValue(
-          raw1,
-          cfg.format,
-          isCoil ? 'Coil' : cfg.dataType,
-          cfg.byteOrder,
-          raw2
-        );
-        updatedBatch[addr] = inc.word1;
-        if (is32 && inc.word2 !== undefined && addr + 1 < cfg.startAddress + cfg.count) {
-          updatedBatch[addr + 1] = inc.word2;
-        }
-      }
-
-      try {
-        await session.writeRegistersBatch(updatedBatch);
-        currentTab.values = { ...currentTab.values, ...updatedBatch };
-      } catch (err) {
-        console.error(`[AutoIncrement] failed for ${tabId}:`, err);
-      }
-    }, tab.config.interval || 1000);
-
-    autoIncTimers.set(tabId, timer);
+    const session = getOrCreateSession(tabId);
+    await session.startAutoIncrement(tab.config.interval || 1000, buildDataGenConfig(tab.config));
   }
 
   async function toggleConnect(tabId: string) {
@@ -355,15 +321,15 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function toggleAutoIncrement(tabId: string) {
+  async function toggleAutoIncrement(tabId: string) {
     const tab = tabs.value.find(t => t.id === tabId);
     if (!tab || !tab.connected || tab.busy) return;
     tab.autoIncrement = !tab.autoIncrement;
     if (tab.autoIncrement) {
-      startAutoIncrement(tabId);
+      await startAutoIncrement(tabId);
       tab.statusMessage = `[${tab.title}] Auto increment started.`;
     } else {
-      stopAutoIncrement(tabId);
+      await stopAutoIncrement(tabId);
       tab.statusMessage = `[${tab.title}] Auto increment stopped.`;
     }
   }
@@ -453,15 +419,7 @@ export const useSessionStore = defineStore('session', () => {
       `Start: ${tab.config.startAddress}, Count: ${tab.config.count}`
     );
     try {
-      const updated = generateRandomRegisters(
-        tab.config.startAddress,
-        tab.config.count,
-        tab.config.dataType,
-        tab.config.byteOrder,
-        tab.config.functionCode
-      );
-      await session.writeRegistersBatch(updated);
-      tab.values = { ...tab.values, ...updated };
+      await session.fillRandom(buildDataGenConfig(tab.config));
       tab.statusMessage = `[${tab.title}] Random fill OK.`;
       tab.statusType = 'success';
       addLog(
@@ -497,6 +455,9 @@ export const useSessionStore = defineStore('session', () => {
       session.updateConfig(tab.connection, tab.config);
       if (tab.isPolling) {
         session.startPolling(nextConfig.interval || 1000);
+      }
+      if (tab.autoIncrement) {
+        session.startAutoIncrement(nextConfig.interval || 1000, buildDataGenConfig(nextConfig));
       }
     }
   }

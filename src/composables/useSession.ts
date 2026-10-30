@@ -6,6 +6,7 @@ import {
   type SessionCommand,
   type SessionEvent,
   type TcpClientInfo,
+  type DataGenConfig,
 } from '../services/modbusService';
 import type { ConnectionConfig } from '../components/SettingsModal.vue';
 import type { ModbusConfig } from '../components/ConfigRow.vue';
@@ -120,6 +121,18 @@ export function useSession(sessionId: string, options?: UseSessionOptions) {
     await dispatch({ type: 'WriteRegistersBatch', payload: batch });
   }
 
+  async function startAutoIncrement(intervalMs: number, config: DataGenConfig) {
+    await dispatch({ type: 'StartAutoIncrement', payload: { intervalMs, config } });
+  }
+
+  async function stopAutoIncrement() {
+    await dispatch({ type: 'StopAutoIncrement' });
+  }
+
+  async function fillRandom(config: DataGenConfig) {
+    await dispatch({ type: 'FillRandom', payload: config });
+  }
+
   async function listTcpClients(): Promise<TcpClientInfo[]> {
     return await ModbusService.listTcpClients(sessionId);
   }
@@ -150,6 +163,9 @@ export function useSession(sessionId: string, options?: UseSessionOptions) {
     readOnce,
     writeRegister,
     writeRegistersBatch,
+    startAutoIncrement,
+    stopAutoIncrement,
+    fillRandom,
     listTcpClients,
     destroy,
   };
