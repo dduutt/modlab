@@ -324,131 +324,111 @@ impl SessionActor {
         }
     }
 
+    async fn emit_error(&mut self, msg: impl Into<String>) {
+        let _ = self.event_sender.send(SessionEvent::PollError(msg.into())).await;
+    }
+
+    async fn emit_data(&mut self, map: HashMap<u16, u16>) {
+        if !map.is_empty() {
+            let _ = self.event_sender.send(SessionEvent::DataUpdated(map)).await;
+        }
+    }
+
+    fn role_is(&self, role: &str) -> bool {
+        self.config.as_ref().map(|c| c.role == role).unwrap_or(false)
+    }
+
+    /// 轮询/自增运行期间禁止单次读取、写入、随机填充（互斥约定）
+    fn ensure_idle(&self, action: &str) -> Result<(), String> {
+        if self.is_polling {
+            return Err(format!("Cannot {} while polling is active", action));
+        }
+        if self.is_auto_incrementing {
+            return Err(format!("Cannot {} while auto-increment is active", action));
+        }
+        Ok(())
+    }
+
+    fn ensure_writable_fc(fc: &str) -> Result<(), String> {
+        if is_readonly_function(fc) {
+            return Err(format!("Function code {} is read-only", fc));
+        }
+        Ok(())
+    }
+
+    /// 集中校验：所有命令的前置约束只在这里声明一次
+    fn guard(&self, cmd: &SessionCommand) -> Result<(), String> {
+        let connected = self.state == FsmState::Connected;
+        match cmd {
+            SessionCommand::StartPolling(_) => {
+                if self.role_is("Slave") {
+                    return Err("Polling is only supported in Master mode".into());
+                }
+                if !connected {
+                    return Err("Cannot poll while disconnected".into());
+                }
+            }
+            SessionCommand::ReadOnce => {
+                if self.role_is("Slave") {
+                    return Err("Read once is only supported in Master mode".into());
+                }
+                self.ensure_idle("read once")?;
+                if !connected {
+                    return Err("Cannot read while disconnected".into());
+                }
+            }
+            SessionCommand::WriteRegister(_) | SessionCommand::WriteRegistersBatch(_) => {
+                self.ensure_idle("write")?;
+                if let Some(cfg) = &self.config {
+                    Self::ensure_writable_fc(&cfg.function_code)?;
+                }
+            }
+            SessionCommand::StartAutoIncrement { config, .. } => {
+                if self.role_is("Master") {
+                    return Err("Auto-increment is only supported in Slave mode".into());
+                }
+                if !connected {
+                    return Err("Cannot start auto-increment while disconnected".into());
+                }
+                Self::ensure_writable_fc(&config.function_code)?;
+            }
+            SessionCommand::FillRandom(config) => {
+                self.ensure_idle("fill random")?;
+                if self.role_is("Master") {
+                    return Err("Random fill is only supported in Slave mode".into());
+                }
+                Self::ensure_writable_fc(&config.function_code)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     async fn handle_command(
         &mut self,
         cmd: SessionCommand,
         interval: &mut time::Interval,
         auto_inc_interval: &mut time::Interval,
     ) {
+        if let Err(msg) = self.guard(&cmd) {
+            self.emit_error(msg).await;
+            return;
+        }
+
         match cmd {
             SessionCommand::Connect(config) => {
                 self.is_polling = false;
                 self.cleanup().await;
-
                 self.config = Some(config.clone());
                 self.set_state(FsmState::Connecting).await;
 
-                // --- SLAVE 模式 ---
-                if config.role == "Slave" {
-                    if config.protocol == "TCP" {
-                        let bind_addr = format!("{}:{}", config.ip, config.port);
-                        match tokio::net::TcpListener::bind(&bind_addr).await {
-                            Ok(listener) => {
-                                let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-                                self.slave_stop = Some(stop_tx);
-                                self.set_state(FsmState::Connected).await;
-
-                                let memory = self.memory.clone();
-                                let event_sender = self.event_sender.clone();
-                                let unit_id = config.unit_id;
-                                let clients = self.clients.clone();
-                                let next_client_id = Arc::new(AtomicUsize::new(1));
-
-                                tokio::spawn(async move {
-                                    let server = TcpServer::new(listener);
-                                    let on_connected = move |stream: tokio::net::TcpStream, peer: SocketAddr| {
-                                        let client_id = next_client_id.fetch_add(1, Ordering::Relaxed);
-                                        let now = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_millis() as u64;
-                                        if let Ok(mut lock) = clients.write() {
-                                            lock.insert(
-                                                client_id,
-                                                TcpClientInfo {
-                                                    id: client_id,
-                                                    address: peer.to_string(),
-                                                    connected_at: now,
-                                                    last_request_at: None,
-                                                },
-                                            );
-                                        }
-                                        let guard = Arc::new(ClientDropGuard {
-                                            client_id,
-                                            clients: clients.clone(),
-                                        });
-                                        let service = SlaveService {
-                                            client_id,
-                                            _unit_id: unit_id,
-                                            memory: memory.clone(),
-                                            event_sender: event_sender.clone(),
-                                            clients: clients.clone(),
-                                            _guard: guard,
-                                        };
-                                        ready(Ok(Some((service, stream))))
-                                    };
-                                    let _ = server.serve_until(
-                                        &on_connected,
-                                        |_err| {},
-                                        async move {
-                                            let _ = stop_rx.await;
-                                        },
-                                    ).await;
-                                });
-                            }
-                            Err(e) => {
-                                self.set_state(FsmState::Error(format!("Bind {} failed: {}", bind_addr, e))).await;
-                            }
-                        }
-                    } else {
-                        // RTU Slave
+                match (config.role.as_str(), config.protocol.as_str()) {
+                    ("Slave", "TCP") => self.connect_slave_tcp(&config).await,
+                    ("Slave", _) => {
                         self.set_state(FsmState::Error("RTU Slave not supported on this platform".into())).await;
                     }
-                    return;
-                }
-
-                // --- MASTER 模式 ---
-                if config.protocol == "TCP" {
-                    let addr_str = format!("{}:{}", config.ip, config.port);
-                    if let Ok(addr) = addr_str.parse() {
-                        let timeout_dur = Duration::from_millis(config.timeout_ms.unwrap_or(1000).clamp(500, 10000));
-                        match time::timeout(timeout_dur, tcp::connect(addr)).await {
-                            Ok(Ok(mut ctx)) => {
-                                ctx.set_slave(Slave(config.unit_id));
-                                self.client = Some(ctx);
-                                self.set_state(FsmState::Connected).await;
-                            }
-                            Ok(Err(e)) => {
-                                self.set_state(FsmState::Error(format!("TCP Connect failed: {}", e))).await;
-                            }
-                            Err(_) => {
-                                self.set_state(FsmState::Error(format!("Connect timeout ({}ms)", timeout_dur.as_millis()))).await;
-                            }
-                        }
-                    } else {
-                        self.set_state(FsmState::Error(format!("Invalid IP:Port '{}'", addr_str))).await;
-                    }
-                } else {
-                    // RTU Master
-                    let builder = tokio_serial::new(&config.serial_port, config.baud_rate)
-                        .data_bits(match config.data_bits { 7 => tokio_serial::DataBits::Seven, _ => tokio_serial::DataBits::Eight })
-                        .stop_bits(match config.stop_bits { 2 => tokio_serial::StopBits::Two, _ => tokio_serial::StopBits::One })
-                        .parity(match config.parity.as_str() {
-                            "Even" => tokio_serial::Parity::Even,
-                            "Odd" => tokio_serial::Parity::Odd,
-                            _ => tokio_serial::Parity::None,
-                        });
-                    match builder.open_native_async() {
-                        Ok(port) => {
-                            let mut ctx = tokio_modbus::client::rtu::attach_slave(port, Slave(config.unit_id));
-                            ctx.set_slave(Slave(config.unit_id));
-                            self.client = Some(ctx);
-                            self.set_state(FsmState::Connected).await;
-                        }
-                        Err(e) => {
-                            self.set_state(FsmState::Error(format!("Open serial {} failed: {}", config.serial_port, e))).await;
-                        }
-                    }
+                    (_, "TCP") => self.connect_master_tcp(&config).await,
+                    _ => self.connect_master_rtu(&config).await,
                 }
             }
             SessionCommand::Disconnect => {
@@ -470,14 +450,6 @@ impl SessionActor {
                 }
             }
             SessionCommand::StartPolling(interval_ms) => {
-                if self.config.as_ref().map(|c| c.role == "Slave").unwrap_or(false) {
-                    let _ = self.event_sender.send(SessionEvent::PollError("Polling is only supported in Master mode".into())).await;
-                    return;
-                }
-                if self.state != FsmState::Connected {
-                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot poll while disconnected".into())).await;
-                    return;
-                }
                 let min_interval = if self.config.as_ref().map(|c| c.protocol == "RTU").unwrap_or(false) {
                     100
                 } else {
@@ -492,155 +464,10 @@ impl SessionActor {
             SessionCommand::StopPolling => {
                 self.is_polling = false;
             }
-            SessionCommand::ReadOnce => {
-                if self.config.as_ref().map(|c| c.role == "Slave").unwrap_or(false) {
-                    let _ = self.event_sender.send(SessionEvent::PollError("Read once is only supported in Master mode".into())).await;
-                    return;
-                }
-                if self.is_polling {
-                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot read once while polling is active".into())).await;
-                    return;
-                }
-                if self.state == FsmState::Connected {
-                    self.execute_poll().await;
-                } else {
-                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot read while disconnected".into())).await;
-                }
-            }
-            SessionCommand::WriteRegister(payload) => {
-                if self.is_polling {
-                    let _ = self
-                        .event_sender
-                        .send(SessionEvent::PollError("Cannot write while polling is active".into()))
-                        .await;
-                    return;
-                }
-                if self.is_auto_incrementing {
-                    let _ = self
-                        .event_sender
-                        .send(SessionEvent::PollError("Cannot write while auto-increment is active".into()))
-                        .await;
-                    return;
-                }
-
-                if let Some(cfg) = &self.config {
-                    if is_readonly_function(&cfg.function_code) {
-                        let _ = self
-                            .event_sender
-                            .send(SessionEvent::PollError(format!("Function code {} is read-only", cfg.function_code)))
-                            .await;
-                        return;
-                    }
-
-                    if cfg.role == "Slave" {
-                        {
-                            let mut mem = self.memory.write().unwrap();
-                            mem.insert(payload.address, payload.value);
-                        }
-                        let mut map = HashMap::new();
-                        map.insert(payload.address, payload.value);
-                        let _ = self.event_sender.send(SessionEvent::DataUpdated(map)).await;
-                        return;
-                    }
-                }
-
-                if let Some(ctx) = &mut self.client {
-                    let is_coil = self.config.as_ref().map(|c| is_coil_function(&c.function_code)).unwrap_or(false);
-                    let write_res = if is_coil {
-                        ctx.write_single_coil(payload.address, payload.value != 0).await
-                    } else {
-                        ctx.write_single_register(payload.address, payload.value).await
-                    };
-
-                    match write_res {
-                        Ok(Ok(_)) => {}
-                        Ok(Err(ex)) => {
-                            let _ = self
-                                .event_sender
-                                .send(SessionEvent::PollError(format!("Write exception: {:?}", ex)))
-                                .await;
-                        }
-                        Err(e) => {
-                            let _ = self
-                                .event_sender
-                                .send(SessionEvent::PollError(format!("Write failed: {}", e)))
-                                .await;
-                        }
-                    }
-                }
-            }
-            SessionCommand::WriteRegistersBatch(batch) => {
-                if self.is_polling {
-                    let _ = self
-                        .event_sender
-                        .send(SessionEvent::PollError("Cannot write while polling is active".into()))
-                        .await;
-                    return;
-                }
-                if self.is_auto_incrementing {
-                    let _ = self
-                        .event_sender
-                        .send(SessionEvent::PollError("Cannot write while auto-increment is active".into()))
-                        .await;
-                    return;
-                }
-
-                if let Some(cfg) = &self.config {
-                    if is_readonly_function(&cfg.function_code) {
-                        let _ = self
-                            .event_sender
-                            .send(SessionEvent::PollError(format!("Function code {} is read-only", cfg.function_code)))
-                            .await;
-                        return;
-                    }
-
-                    if cfg.role == "Slave" {
-                        {
-                            let mut mem = self.memory.write().unwrap();
-                            for (addr, val) in &batch {
-                                mem.insert(*addr, *val);
-                            }
-                        }
-                        let _ = self.event_sender.send(SessionEvent::DataUpdated(batch)).await;
-                    } else if let Some(ctx) = &mut self.client {
-                        if is_coil_function(&cfg.function_code) {
-                            for (addr, val) in &batch {
-                                let _ = ctx.write_single_coil(*addr, *val != 0).await;
-                            }
-                        } else {
-                            let mut addrs: Vec<u16> = batch.keys().copied().collect();
-                            addrs.sort_unstable();
-                            if !addrs.is_empty() {
-                                let start = addrs[0];
-                                let count = addrs.len() as u16;
-                                let is_contiguous = addrs.last().copied().unwrap_or(0) == start + count - 1;
-                                if is_contiguous && count <= 123 {
-                                    let vals: Vec<u16> = addrs.iter().map(|a| batch[a]).collect();
-                                    let _ = ctx.write_multiple_registers(start, &vals).await;
-                                } else {
-                                    for (addr, val) in &batch {
-                                        let _ = ctx.write_single_register(*addr, *val).await;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            SessionCommand::ReadOnce => self.execute_poll().await,
+            SessionCommand::WriteRegister(payload) => self.write_register(payload).await,
+            SessionCommand::WriteRegistersBatch(batch) => self.write_registers_batch(batch).await,
             SessionCommand::StartAutoIncrement { interval_ms, config } => {
-                if self.config.as_ref().map(|c| c.role == "Master").unwrap_or(false) {
-                    let _ = self.event_sender.send(SessionEvent::PollError("Auto-increment is only supported in Slave mode".into())).await;
-                    return;
-                }
-                if self.state != FsmState::Connected {
-                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot start auto-increment while disconnected".into())).await;
-                    return;
-                }
-                if is_readonly_function(&config.function_code) {
-                    let _ = self.event_sender.send(SessionEvent::PollError(format!("Function code {} is read-only", config.function_code))).await;
-                    return;
-                }
-
                 let safe_interval = interval_ms.max(100);
                 self.auto_inc_interval = safe_interval;
                 self.auto_inc_config = Some(config);
@@ -653,25 +480,175 @@ impl SessionActor {
                 self.is_auto_incrementing = false;
                 self.auto_inc_config = None;
             }
-            SessionCommand::FillRandom(config) => {
-                if self.is_polling {
-                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot fill random while polling is active".into())).await;
-                    return;
-                }
-                if self.is_auto_incrementing {
-                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot fill random while auto-increment is active".into())).await;
-                    return;
-                }
-                if self.config.as_ref().map(|c| c.role == "Master").unwrap_or(false) {
-                    let _ = self.event_sender.send(SessionEvent::PollError("Random fill is only supported in Slave mode".into())).await;
-                    return;
-                }
-                if is_readonly_function(&config.function_code) {
-                    let _ = self.event_sender.send(SessionEvent::PollError(format!("Function code {} is read-only", config.function_code))).await;
-                    return;
-                }
+            SessionCommand::FillRandom(config) => self.execute_fill_random(&config).await,
+        }
+    }
 
-                self.execute_fill_random(&config).await;
+    async fn connect_slave_tcp(&mut self, config: &ConnectionConfig) {
+        let bind_addr = format!("{}:{}", config.ip, config.port);
+        let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                self.set_state(FsmState::Error(format!("Bind {} failed: {}", bind_addr, e))).await;
+                return;
+            }
+        };
+
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        self.slave_stop = Some(stop_tx);
+        self.set_state(FsmState::Connected).await;
+
+        let memory = self.memory.clone();
+        let event_sender = self.event_sender.clone();
+        let unit_id = config.unit_id;
+        let clients = self.clients.clone();
+        let next_client_id = Arc::new(AtomicUsize::new(1));
+
+        tokio::spawn(async move {
+            let server = TcpServer::new(listener);
+            let on_connected = move |stream: tokio::net::TcpStream, peer: SocketAddr| {
+                let client_id = next_client_id.fetch_add(1, Ordering::Relaxed);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                if let Ok(mut lock) = clients.write() {
+                    lock.insert(
+                        client_id,
+                        TcpClientInfo {
+                            id: client_id,
+                            address: peer.to_string(),
+                            connected_at: now,
+                            last_request_at: None,
+                        },
+                    );
+                }
+                let guard = Arc::new(ClientDropGuard {
+                    client_id,
+                    clients: clients.clone(),
+                });
+                let service = SlaveService {
+                    client_id,
+                    _unit_id: unit_id,
+                    memory: memory.clone(),
+                    event_sender: event_sender.clone(),
+                    clients: clients.clone(),
+                    _guard: guard,
+                };
+                ready(Ok(Some((service, stream))))
+            };
+            let _ = server
+                .serve_until(&on_connected, |_err| {}, async move {
+                    let _ = stop_rx.await;
+                })
+                .await;
+        });
+    }
+
+    async fn connect_master_tcp(&mut self, config: &ConnectionConfig) {
+        let addr_str = format!("{}:{}", config.ip, config.port);
+        let addr: SocketAddr = match addr_str.parse() {
+            Ok(a) => a,
+            Err(_) => {
+                self.set_state(FsmState::Error(format!("Invalid IP:Port '{}'", addr_str))).await;
+                return;
+            }
+        };
+        let timeout_dur = Duration::from_millis(config.timeout_ms.unwrap_or(1000).clamp(500, 10000));
+        match time::timeout(timeout_dur, tcp::connect(addr)).await {
+            Ok(Ok(mut ctx)) => {
+                ctx.set_slave(Slave(config.unit_id));
+                self.client = Some(ctx);
+                self.set_state(FsmState::Connected).await;
+            }
+            Ok(Err(e)) => {
+                self.set_state(FsmState::Error(format!("TCP Connect failed: {}", e))).await;
+            }
+            Err(_) => {
+                self.set_state(FsmState::Error(format!("Connect timeout ({}ms)", timeout_dur.as_millis()))).await;
+            }
+        }
+    }
+
+    async fn connect_master_rtu(&mut self, config: &ConnectionConfig) {
+        let builder = tokio_serial::new(&config.serial_port, config.baud_rate)
+            .data_bits(match config.data_bits {
+                7 => tokio_serial::DataBits::Seven,
+                _ => tokio_serial::DataBits::Eight,
+            })
+            .stop_bits(match config.stop_bits {
+                2 => tokio_serial::StopBits::Two,
+                _ => tokio_serial::StopBits::One,
+            })
+            .parity(match config.parity.as_str() {
+                "Even" => tokio_serial::Parity::Even,
+                "Odd" => tokio_serial::Parity::Odd,
+                _ => tokio_serial::Parity::None,
+            });
+        match builder.open_native_async() {
+            Ok(port) => {
+                self.client = Some(tokio_modbus::client::rtu::attach_slave(port, Slave(config.unit_id)));
+                self.set_state(FsmState::Connected).await;
+            }
+            Err(e) => {
+                self.set_state(FsmState::Error(format!("Open serial {} failed: {}", config.serial_port, e))).await;
+            }
+        }
+    }
+
+    /// Slave 本地写内存并通知前端
+    async fn write_local(&mut self, map: HashMap<u16, u16>) {
+        {
+            let mut mem = self.memory.write().unwrap();
+            mem.extend(map.iter().map(|(a, v)| (*a, *v)));
+        }
+        self.emit_data(map).await;
+    }
+
+    async fn write_register(&mut self, payload: WritePayload) {
+        if self.role_is("Slave") {
+            self.write_local(HashMap::from([(payload.address, payload.value)])).await;
+            return;
+        }
+        let is_coil = self.config.as_ref().map(|c| is_coil_function(&c.function_code)).unwrap_or(false);
+        let Some(ctx) = &mut self.client else { return };
+        let res = if is_coil {
+            ctx.write_single_coil(payload.address, payload.value != 0).await
+        } else {
+            ctx.write_single_register(payload.address, payload.value).await
+        };
+        match res {
+            Ok(Ok(_)) => {}
+            Ok(Err(ex)) => self.emit_error(format!("Write exception: {:?}", ex)).await,
+            Err(e) => self.emit_error(format!("Write failed: {}", e)).await,
+        }
+    }
+
+    async fn write_registers_batch(&mut self, batch: HashMap<u16, u16>) {
+        if self.role_is("Slave") {
+            self.write_local(batch).await;
+            return;
+        }
+        let is_coil = self.config.as_ref().map(|c| is_coil_function(&c.function_code)).unwrap_or(false);
+        let Some(ctx) = &mut self.client else { return };
+
+        if is_coil {
+            for (addr, val) in &batch {
+                let _ = ctx.write_single_coil(*addr, *val != 0).await;
+            }
+            return;
+        }
+        let mut addrs: Vec<u16> = batch.keys().copied().collect();
+        addrs.sort_unstable();
+        let Some(&start) = addrs.first() else { return };
+        let count = addrs.len() as u16;
+        let is_contiguous = addrs.last().copied() == Some(start + count - 1);
+        if is_contiguous && count <= 123 {
+            let vals: Vec<u16> = addrs.iter().map(|a| batch[a]).collect();
+            let _ = ctx.write_multiple_registers(start, &vals).await;
+        } else {
+            for (addr, val) in &batch {
+                let _ = ctx.write_single_register(*addr, *val).await;
             }
         }
     }
@@ -706,61 +683,43 @@ impl SessionActor {
         let count = config.count;
 
         let poll_fut = async {
-            match fc_normalized {
-                "0x01" => {
-                    let res = ctx.read_coils(start_addr, count).await.map_err(|e| e.to_string())?;
-                    match res {
-                        Ok(bits) => {
-                            let mut data_map = HashMap::new();
-                            for (i, bit) in bits.into_iter().enumerate() {
-                                data_map.insert(start_addr + i as u16, if bit { 1 } else { 0 });
-                            }
-                            Ok(data_map)
-                        }
-                        Err(ex) => Err(format!("Modbus exception: {:?}", ex)),
-                    }
-                }
-                "0x02" => {
-                    let res = ctx.read_discrete_inputs(start_addr, count).await.map_err(|e| e.to_string())?;
-                    match res {
-                        Ok(bits) => {
-                            let mut data_map = HashMap::new();
-                            for (i, bit) in bits.into_iter().enumerate() {
-                                data_map.insert(start_addr + i as u16, if bit { 1 } else { 0 });
-                            }
-                            Ok(data_map)
-                        }
-                        Err(ex) => Err(format!("Modbus exception: {:?}", ex)),
-                    }
-                }
-                "0x03" => {
-                    let res = ctx.read_holding_registers(start_addr, count).await.map_err(|e| e.to_string())?;
-                    match res {
-                        Ok(words) => {
-                            let mut data_map = HashMap::new();
-                            for (i, val) in words.into_iter().enumerate() {
-                                data_map.insert(start_addr + i as u16, val);
-                            }
-                            Ok(data_map)
-                        }
-                        Err(ex) => Err(format!("Modbus exception: {:?}", ex)),
-                    }
-                }
-                "0x04" => {
-                    let res = ctx.read_input_registers(start_addr, count).await.map_err(|e| e.to_string())?;
-                    match res {
-                        Ok(words) => {
-                            let mut data_map = HashMap::new();
-                            for (i, val) in words.into_iter().enumerate() {
-                                data_map.insert(start_addr + i as u16, val);
-                            }
-                            Ok(data_map)
-                        }
-                        Err(ex) => Err(format!("Modbus exception: {:?}", ex)),
-                    }
-                }
-                _ => Err(format!("Unsupported function code {}", fc_normalized)),
-            }
+            let exception = |ex: ExceptionCode| format!("Modbus exception: {:?}", ex);
+            let words: Vec<u16> = match fc_normalized {
+                "0x01" => ctx
+                    .read_coils(start_addr, count)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(exception)?
+                    .into_iter()
+                    .map(u16::from)
+                    .collect(),
+                "0x02" => ctx
+                    .read_discrete_inputs(start_addr, count)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(exception)?
+                    .into_iter()
+                    .map(u16::from)
+                    .collect(),
+                "0x03" => ctx
+                    .read_holding_registers(start_addr, count)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(exception)?,
+                "0x04" => ctx
+                    .read_input_registers(start_addr, count)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(exception)?,
+                _ => return Err(format!("Unsupported function code {}", fc_normalized)),
+            };
+            Ok::<HashMap<u16, u16>, String>(
+                words
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, v)| (start_addr + i as u16, v))
+                    .collect(),
+            )
         };
 
         match time::timeout(timeout_dur, poll_fut).await {
@@ -835,28 +794,19 @@ impl SessionActor {
                             let val = f32::from_be_bytes(swapped);
                             let next = if val.is_nan() || val.is_infinite() { 1.0 } else { val + 1.0 };
                             let out_bytes = swap_bytes_32(next.to_be_bytes(), &config.byte_order);
-                            (
-                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
-                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
-                            )
+                            bytes_to_words(out_bytes)
                         }
                         "Int32" => {
                             let val = i32::from_be_bytes(swapped);
                             let next = val.wrapping_add(1);
                             let out_bytes = swap_bytes_32(next.to_be_bytes(), &config.byte_order);
-                            (
-                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
-                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
-                            )
+                            bytes_to_words(out_bytes)
                         }
                         _ => {
                             let val = u32::from_be_bytes(swapped);
                             let next = val.wrapping_add(1);
                             let out_bytes = swap_bytes_32(next.to_be_bytes(), &config.byte_order);
-                            (
-                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
-                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
-                            )
+                            bytes_to_words(out_bytes)
                         }
                     };
 
@@ -916,26 +866,17 @@ impl SessionActor {
                             let val = rng.gen_f32(-5000.0, 5000.0);
                             let rounded = (val * 100.0).round() / 100.0;
                             let out_bytes = swap_bytes_32(rounded.to_be_bytes(), &config.byte_order);
-                            (
-                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
-                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
-                            )
+                            bytes_to_words(out_bytes)
                         }
                         "Int32" => {
                             let val = rng.gen_i32(-100000, 100000);
                             let out_bytes = swap_bytes_32(val.to_be_bytes(), &config.byte_order);
-                            (
-                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
-                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
-                            )
+                            bytes_to_words(out_bytes)
                         }
                         _ => {
                             let val = rng.gen_u32(200000);
                             let out_bytes = swap_bytes_32(val.to_be_bytes(), &config.byte_order);
-                            (
-                                ((out_bytes[0] as u16) << 8) | (out_bytes[1] as u16),
-                                ((out_bytes[2] as u16) << 8) | (out_bytes[3] as u16),
-                            )
+                            bytes_to_words(out_bytes)
                         }
                     };
                     mem.insert(addr, w1);
@@ -971,6 +912,11 @@ fn is_readonly_function(fc: &str) -> bool {
 #[inline]
 fn is_32bit_datatype(dt: &str) -> bool {
     matches!(dt, "Float32" | "Int32" | "UInt32")
+}
+
+#[inline]
+fn bytes_to_words(b: [u8; 4]) -> (u16, u16) {
+    (u16::from_be_bytes([b[0], b[1]]), u16::from_be_bytes([b[2], b[3]]))
 }
 
 #[inline]
