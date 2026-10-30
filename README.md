@@ -2,6 +2,8 @@
 
 Modbus 桌面调试工具，支持 **TCP / RTU 主站通信与从站模拟**，可通过多个标签页同时管理设备。
 
+![Modlab 界面预览](docs/screenshot.png)
+
 ## 下载
 
 前往 [Releases](https://github.com/dduutt/modlab/releases/latest) 下载 Windows x64 版本：
