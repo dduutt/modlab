@@ -470,25 +470,41 @@ impl SessionActor {
                 }
             }
             SessionCommand::StartPolling(interval_ms) => {
-                if self.state == FsmState::Connected {
-                    let min_interval = if self.config.as_ref().map(|c| c.protocol == "RTU").unwrap_or(false) {
-                        100
-                    } else {
-                        20
-                    };
-                    let safe_interval = interval_ms.max(min_interval);
-                    self.poll_interval = safe_interval;
-                    self.is_polling = true;
-                    *interval = time::interval(Duration::from_millis(safe_interval));
-                    interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+                if self.config.as_ref().map(|c| c.role == "Slave").unwrap_or(false) {
+                    let _ = self.event_sender.send(SessionEvent::PollError("Polling is only supported in Master mode".into())).await;
+                    return;
                 }
+                if self.state != FsmState::Connected {
+                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot poll while disconnected".into())).await;
+                    return;
+                }
+                let min_interval = if self.config.as_ref().map(|c| c.protocol == "RTU").unwrap_or(false) {
+                    100
+                } else {
+                    20
+                };
+                let safe_interval = interval_ms.max(min_interval);
+                self.poll_interval = safe_interval;
+                self.is_polling = true;
+                *interval = time::interval(Duration::from_millis(safe_interval));
+                interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
             }
             SessionCommand::StopPolling => {
                 self.is_polling = false;
             }
             SessionCommand::ReadOnce => {
+                if self.config.as_ref().map(|c| c.role == "Slave").unwrap_or(false) {
+                    let _ = self.event_sender.send(SessionEvent::PollError("Read once is only supported in Master mode".into())).await;
+                    return;
+                }
+                if self.is_polling {
+                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot read once while polling is active".into())).await;
+                    return;
+                }
                 if self.state == FsmState::Connected {
                     self.execute_poll().await;
+                } else {
+                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot read while disconnected".into())).await;
                 }
             }
             SessionCommand::WriteRegister(payload) => {
@@ -496,6 +512,13 @@ impl SessionActor {
                     let _ = self
                         .event_sender
                         .send(SessionEvent::PollError("Cannot write while polling is active".into()))
+                        .await;
+                    return;
+                }
+                if self.is_auto_incrementing {
+                    let _ = self
+                        .event_sender
+                        .send(SessionEvent::PollError("Cannot write while auto-increment is active".into()))
                         .await;
                     return;
                 }
@@ -554,6 +577,13 @@ impl SessionActor {
                         .await;
                     return;
                 }
+                if self.is_auto_incrementing {
+                    let _ = self
+                        .event_sender
+                        .send(SessionEvent::PollError("Cannot write while auto-increment is active".into()))
+                        .await;
+                    return;
+                }
 
                 if let Some(cfg) = &self.config {
                     if cfg.function_code == "0x02" || cfg.function_code == "0x04" {
@@ -599,6 +629,20 @@ impl SessionActor {
                 }
             }
             SessionCommand::StartAutoIncrement { interval_ms, config } => {
+                if self.config.as_ref().map(|c| c.role == "Master").unwrap_or(false) {
+                    let _ = self.event_sender.send(SessionEvent::PollError("Auto-increment is only supported in Slave mode".into())).await;
+                    return;
+                }
+                if self.state != FsmState::Connected {
+                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot start auto-increment while disconnected".into())).await;
+                    return;
+                }
+                let fc = config.function_code.trim();
+                if fc == "0x02" || fc == "0x04" || fc == "2" || fc == "4" || fc == "discrete_inputs" || fc == "input_registers" {
+                    let _ = self.event_sender.send(SessionEvent::PollError(format!("Function code {} is read-only", config.function_code))).await;
+                    return;
+                }
+
                 let safe_interval = interval_ms.max(100);
                 self.auto_inc_interval = safe_interval;
                 self.auto_inc_config = Some(config);
@@ -612,6 +656,24 @@ impl SessionActor {
                 self.auto_inc_config = None;
             }
             SessionCommand::FillRandom(config) => {
+                if self.is_polling {
+                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot fill random while polling is active".into())).await;
+                    return;
+                }
+                if self.is_auto_incrementing {
+                    let _ = self.event_sender.send(SessionEvent::PollError("Cannot fill random while auto-increment is active".into())).await;
+                    return;
+                }
+                if self.config.as_ref().map(|c| c.role == "Master").unwrap_or(false) {
+                    let _ = self.event_sender.send(SessionEvent::PollError("Random fill is only supported in Slave mode".into())).await;
+                    return;
+                }
+                let fc = config.function_code.trim();
+                if fc == "0x02" || fc == "0x04" || fc == "2" || fc == "4" || fc == "discrete_inputs" || fc == "input_registers" {
+                    let _ = self.event_sender.send(SessionEvent::PollError(format!("Function code {} is read-only", config.function_code))).await;
+                    return;
+                }
+
                 self.execute_fill_random(&config).await;
             }
         }
@@ -1104,11 +1166,16 @@ mod tests {
             other => panic!("Expected DataUpdated, got {:?}", other),
         }
 
-        // 5. Test constraint: Write rejected while polling is active
+        // 5. Test constraint: Write and ReadOnce rejected while polling is active
         master_cmd_tx.send(SessionCommand::StartPolling(100)).await.unwrap();
         master_cmd_tx.send(SessionCommand::WriteRegister(WritePayload { address: 6, value: 5678 })).await.unwrap();
         let evt = master_evt_rx.recv().await.unwrap();
         assert_eq!(evt, SessionEvent::PollError("Cannot write while polling is active".into()));
+
+        master_cmd_tx.send(SessionCommand::ReadOnce).await.unwrap();
+        let evt = master_evt_rx.recv().await.unwrap();
+        assert_eq!(evt, SessionEvent::PollError("Cannot read once while polling is active".into()));
+
         master_cmd_tx.send(SessionCommand::StopPolling).await.unwrap();
 
         // 6. Test constraint: Write rejected for read-only FC 0x04
@@ -1133,6 +1200,27 @@ mod tests {
         let slave_actor = SessionActor::new("slave_inc_test".into(), slave_cmd_rx, slave_evt_tx, slave_clients);
         tokio::spawn(slave_actor.run());
 
+        // Connect Slave
+        let slave_cfg = ConnectionConfig {
+            protocol: "TCP".into(),
+            ip: "127.0.0.1".into(),
+            port: 15022,
+            serial_port: "".into(),
+            baud_rate: 9600,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "None".into(),
+            role: "Slave".into(),
+            unit_id: 1,
+            function_code: "0x03".into(),
+            start_address: 0,
+            count: 20,
+            timeout_ms: Some(1000),
+        };
+        slave_cmd_tx.send(SessionCommand::Connect(slave_cfg)).await.unwrap();
+        let _ = slave_evt_rx.recv().await.unwrap(); // Connecting
+        let _ = slave_evt_rx.recv().await.unwrap(); // Connected
+
         // 1. Test FillRandom
         let gen_cfg = DataGenConfig {
             start_address: 0,
@@ -1153,13 +1241,29 @@ mod tests {
             other => panic!("Expected DataUpdated from FillRandom, got {:?}", other),
         }
 
-        // 2. Test StartAutoIncrement with fast 100ms interval
+        // 2. Test StartAutoIncrement
         slave_cmd_tx.send(SessionCommand::StartAutoIncrement {
             interval_ms: 100,
             config: gen_cfg,
         }).await.unwrap();
 
-        // Receive tick update
+        // 3. Test constraint: FillRandom rejected while auto-increment is active
+        slave_cmd_tx.send(SessionCommand::FillRandom(DataGenConfig {
+            start_address: 0,
+            count: 5,
+            function_code: "0x03".into(),
+            data_type: "Int16".into(),
+            byte_order: "ABCD".into(),
+        })).await.unwrap();
+        let evt = slave_evt_rx.recv().await.unwrap();
+        assert_eq!(evt, SessionEvent::PollError("Cannot fill random while auto-increment is active".into()));
+
+        // 4. Test constraint: Write rejected while auto-increment is active
+        slave_cmd_tx.send(SessionCommand::WriteRegister(WritePayload { address: 1, value: 99 })).await.unwrap();
+        let evt = slave_evt_rx.recv().await.unwrap();
+        assert_eq!(evt, SessionEvent::PollError("Cannot write while auto-increment is active".into()));
+
+        // Receive tick update from auto increment
         let evt = tokio::time::timeout(Duration::from_millis(500), slave_evt_rx.recv()).await.unwrap().unwrap();
         match evt {
             SessionEvent::DataUpdated(map) => {
@@ -1168,8 +1272,23 @@ mod tests {
             other => panic!("Expected DataUpdated from AutoIncrement, got {:?}", other),
         }
 
-        // 3. Stop auto increment
+        // 5. Stop auto increment
         slave_cmd_tx.send(SessionCommand::StopAutoIncrement).await.unwrap();
+
+        // 6. Test constraint: Auto-increment rejected for read-only FC 0x04
+        slave_cmd_tx.send(SessionCommand::StartAutoIncrement {
+            interval_ms: 100,
+            config: DataGenConfig {
+                start_address: 0,
+                count: 5,
+                function_code: "0x04".into(),
+                data_type: "Int16".into(),
+                byte_order: "ABCD".into(),
+            },
+        }).await.unwrap();
+        let evt = slave_evt_rx.recv().await.unwrap();
+        assert_eq!(evt, SessionEvent::PollError("Function code 0x04 is read-only".into()));
+
         slave_cmd_tx.send(SessionCommand::Disconnect).await.unwrap();
     }
 }

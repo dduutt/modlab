@@ -126,11 +126,11 @@ const emit = defineEmits<{
 
         <!-- Read Action Button -->
         <button
-          @click="connected && emit('read-once')"
-          :disabled="!connected || loading"
+          @click="connected && !isPolling && emit('read-once')"
+          :disabled="!connected || loading || isPolling"
           :class="[
             'flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-medium border transition',
-            !connected
+            !connected || isPolling
               ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-60'
               : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border-gray-200 cursor-pointer'
           ]"

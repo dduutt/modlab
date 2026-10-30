@@ -336,7 +336,7 @@ export const useSessionStore = defineStore('session', () => {
 
   async function readOnce(tabId: string) {
     const tab = tabs.value.find(t => t.id === tabId);
-    if (!tab || !tab.connected || tab.busy) return;
+    if (!tab || !tab.connected || tab.busy || tab.isPolling) return;
     const session = getOrCreateSession(tabId);
     addLog(
       tab,
