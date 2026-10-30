@@ -62,7 +62,7 @@ pub enum SessionCommand {
     WriteRegistersBatch(HashMap<u16, u16>),
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "payload")]
 pub enum SessionEvent {
     StateChanged(FsmState),
@@ -688,5 +688,92 @@ mod tests {
         assert_eq!(check_bounds(65535, 2, 125), Err(ExceptionCode::IllegalDataAddress));
         assert_eq!(check_bounds(0, 10, 125), Ok(()));
         assert_eq!(check_bounds(65530, 6, 125), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn test_tcp_slave_master_loopback() {
+        let slave_clients = Arc::new(RwLock::new(HashMap::new()));
+        let (slave_cmd_tx, slave_cmd_rx) = mpsc::channel(32);
+        let (slave_evt_tx, mut slave_evt_rx) = mpsc::channel(32);
+        let slave_actor = SessionActor::new("slave_test".into(), slave_cmd_rx, slave_evt_tx, slave_clients.clone());
+        tokio::spawn(slave_actor.run());
+
+        // 1. Connect Slave to 127.0.0.1:15020
+        let slave_cfg = ConnectionConfig {
+            protocol: "TCP".into(),
+            ip: "127.0.0.1".into(),
+            port: 15020,
+            serial_port: "".into(),
+            baud_rate: 9600,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "None".into(),
+            role: "Slave".into(),
+            unit_id: 1,
+            function_code: "0x03".into(),
+            start_address: 0,
+            count: 20,
+            timeout_ms: Some(1000),
+        };
+        slave_cmd_tx.send(SessionCommand::Connect(slave_cfg)).await.unwrap();
+
+        let evt = slave_evt_rx.recv().await.unwrap();
+        assert_eq!(evt, SessionEvent::StateChanged(FsmState::Connecting));
+        let evt = slave_evt_rx.recv().await.unwrap();
+        assert_eq!(evt, SessionEvent::StateChanged(FsmState::Connected));
+
+        // 2. Connect Master to 127.0.0.1:15020
+        let master_clients = Arc::new(RwLock::new(HashMap::new()));
+        let (master_cmd_tx, master_cmd_rx) = mpsc::channel(32);
+        let (master_evt_tx, mut master_evt_rx) = mpsc::channel(32);
+        let master_actor = SessionActor::new("master_test".into(), master_cmd_rx, master_evt_tx, master_clients);
+        tokio::spawn(master_actor.run());
+
+        let master_cfg = ConnectionConfig {
+            protocol: "TCP".into(),
+            ip: "127.0.0.1".into(),
+            port: 15020,
+            serial_port: "".into(),
+            baud_rate: 9600,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "None".into(),
+            role: "Master".into(),
+            unit_id: 1,
+            function_code: "0x03".into(),
+            start_address: 0,
+            count: 10,
+            timeout_ms: Some(1000),
+        };
+        master_cmd_tx.send(SessionCommand::Connect(master_cfg)).await.unwrap();
+
+        let evt = master_evt_rx.recv().await.unwrap();
+        assert_eq!(evt, SessionEvent::StateChanged(FsmState::Connecting));
+        let evt = master_evt_rx.recv().await.unwrap();
+        assert_eq!(evt, SessionEvent::StateChanged(FsmState::Connected));
+
+        // Wait brief tick for connection handshake
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Verify Slave sees 1 connected client
+        assert_eq!(slave_clients.read().unwrap().len(), 1);
+
+        // 3. Master writes register 5 = 1234
+        master_cmd_tx.send(SessionCommand::WriteRegister(WritePayload { address: 5, value: 1234 })).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // 4. Master reads registers
+        master_cmd_tx.send(SessionCommand::ReadOnce).await.unwrap();
+        let evt = master_evt_rx.recv().await.unwrap();
+        match evt {
+            SessionEvent::DataUpdated(map) => {
+                assert_eq!(map.get(&5), Some(&1234));
+            }
+            other => panic!("Expected DataUpdated, got {:?}", other),
+        }
+
+        // 5. Clean up
+        slave_cmd_tx.send(SessionCommand::Disconnect).await.unwrap();
+        master_cmd_tx.send(SessionCommand::Disconnect).await.unwrap();
     }
 }
