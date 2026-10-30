@@ -335,6 +335,12 @@ impl Service for SlaveService {
     }
 }
 
+pub enum SessionRuntime {
+    Idle,
+    Master(ModbusContext),
+    Slave(tokio::sync::oneshot::Sender<()>),
+}
+
 /// Actor: 独立协程内部状态，独占通信资源，完全无锁竞争
 pub struct SessionActor {
     _id: String,
@@ -342,8 +348,7 @@ pub struct SessionActor {
     receiver: mpsc::Receiver<CommandEnvelope>,
     event_sender: mpsc::Sender<SessionEvent>,
     config: Option<ConnectionConfig>,
-    client: Option<ModbusContext>,
-    slave_stop: Option<tokio::sync::oneshot::Sender<()>>,
+    runtime: SessionRuntime,
     memory: Arc<RwLock<HashMap<u16, u16>>>,
     clients: Arc<RwLock<HashMap<usize, TcpClientInfo>>>,
     is_polling: bool,
@@ -366,8 +371,7 @@ impl SessionActor {
             receiver,
             event_sender,
             config: None,
-            client: None,
-            slave_stop: None,
+            runtime: SessionRuntime::Idle,
             memory: Arc::new(RwLock::new(HashMap::new())),
             clients,
             is_polling: false,
@@ -417,11 +421,14 @@ impl SessionActor {
 
     async fn cleanup(&mut self) {
         self.is_auto_incrementing = false;
-        if let Some(stop) = self.slave_stop.take() {
-            let _ = stop.send(());
-        }
-        if let Some(mut ctx) = self.client.take() {
-            let _ = ctx.disconnect().await;
+        match std::mem::replace(&mut self.runtime, SessionRuntime::Idle) {
+            SessionRuntime::Slave(stop) => {
+                let _ = stop.send(());
+            }
+            SessionRuntime::Master(mut ctx) => {
+                let _ = ctx.disconnect().await;
+            }
+            SessionRuntime::Idle => {}
         }
         if let Ok(mut lock) = self.clients.write() {
             lock.clear();
@@ -618,7 +625,7 @@ impl SessionActor {
         };
 
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-        self.slave_stop = Some(stop_tx);
+        self.runtime = SessionRuntime::Slave(stop_tx);
         self.set_state(FsmState::Connected).await;
 
         let memory = self.memory.clone();
@@ -683,7 +690,7 @@ impl SessionActor {
             Ok(Ok(stream)) => {
                 let tap = WireTap::new(stream, self.event_sender.clone(), "TCP".into());
                 let ctx = tcp::attach_slave(tap, Slave(config.unit_id));
-                self.client = Some(ctx);
+                self.runtime = SessionRuntime::Master(ctx);
                 self.set_state(FsmState::Connected).await;
             }
             Ok(Err(e)) => {
@@ -713,12 +720,20 @@ impl SessionActor {
         match builder.open_native_async() {
             Ok(port) => {
                 let tap = WireTap::new(port, self.event_sender.clone(), "RTU".into());
-                self.client = Some(tokio_modbus::client::rtu::attach_slave(tap, Slave(config.unit_id)));
+                let ctx = tokio_modbus::client::rtu::attach_slave(tap, Slave(config.unit_id));
+                self.runtime = SessionRuntime::Master(ctx);
                 self.set_state(FsmState::Connected).await;
             }
             Err(e) => {
                 self.set_state(FsmState::Error(format!("Open serial {} failed: {}", config.serial_port, e))).await;
             }
+        }
+    }
+
+    fn master_ctx(&mut self) -> Result<&mut ModbusContext, String> {
+        match &mut self.runtime {
+            SessionRuntime::Master(ctx) => Ok(ctx),
+            _ => Err("Not connected as Master".to_string()),
         }
     }
 
@@ -737,7 +752,7 @@ impl SessionActor {
             return Ok(());
         }
         let is_coil = self.config.as_ref().map(|c| is_coil_function(&c.function_code)).unwrap_or(false);
-        let ctx = self.client.as_mut().ok_or_else(|| "Not connected".to_string())?;
+        let ctx = self.master_ctx()?;
         let res = if is_coil {
             ctx.write_single_coil(payload.address, payload.value != 0).await
         } else {
@@ -764,7 +779,7 @@ impl SessionActor {
             return Ok(());
         }
         let is_coil = self.config.as_ref().map(|c| is_coil_function(&c.function_code)).unwrap_or(false);
-        let ctx = self.client.as_mut().ok_or_else(|| "Not connected".to_string())?;
+        let ctx = self.master_ctx()?;
 
         if is_coil {
             for (addr, val) in &batch {
@@ -828,8 +843,8 @@ impl SessionActor {
     }
 
     async fn execute_poll(&mut self) {
-        let (ctx, config) = match (self.client.as_mut(), self.config.as_ref()) {
-            (Some(c), Some(cfg)) => (c, cfg),
+        let (ctx, config) = match (&mut self.runtime, self.config.as_ref()) {
+            (SessionRuntime::Master(c), Some(cfg)) => (c, cfg),
             _ => return,
         };
 
@@ -909,9 +924,7 @@ impl SessionActor {
                 if is_fatal {
                     self.is_polling = false;
                     self.set_state(FsmState::Error(format!("Connection lost: {}", err_msg))).await;
-                    if let Some(mut ctx) = self.client.take() {
-                        let _ = ctx.disconnect().await;
-                    }
+                    self.cleanup().await;
                 } else {
                     let _ = self.event_sender.send(SessionEvent::PollError(format!("Read failed: {}", err_msg))).await;
                 }
