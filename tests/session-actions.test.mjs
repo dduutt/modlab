@@ -5,8 +5,9 @@ import ts from 'typescript';
 
 // Exercise the actual setup handlers with deferred IPC responses, without
 // starting a Tauri webview or replacing their implementation with a test copy.
-const component = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8');
-const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1];
+const script = readFileSync(new URL('../src/utils/legacyHandlers.ts', import.meta.url), 'utf8');
+const component = '';
+// legacy script
 const source = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true);
 const names = new Set([
   'logFailure', 'captureTabRequest',

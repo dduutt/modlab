@@ -5,7 +5,7 @@ import ts from 'typescript';
 import { loadTs } from './helpers.mjs';
 
 const { incrementFormattedValue } = await loadTs('../src/utils/modbusFormatter.ts');
-const script = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8').match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1];
+const script = readFileSync(new URL('../src/utils/legacyHandlers.ts', import.meta.url), 'utf8');
 const source = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true);
 const names = new Set(['logFailure', 'captureTabRequest', 'clearTabTimers', 'updateTabTimers', 'handleConfirmCloseTab']);
 const extracted = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text)).map(node => node.getText(source)).join('\n');
