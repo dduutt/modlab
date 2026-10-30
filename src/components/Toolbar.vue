@@ -79,7 +79,7 @@ const emit = defineEmits<{
         <!-- Auto Increment Toggle (Fixed Label, Active Emerald State) -->
         <button
           @click="emit('toggle-auto-increment')"
-          :disabled="!connected || loading"
+          :disabled="!connected || loading || functionCode === '0x02' || functionCode === '0x04'"
           :class="[
             'flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-medium border transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed',
             autoIncrement
@@ -95,7 +95,7 @@ const emit = defineEmits<{
         <!-- Random Action Button -->
         <button
           @click="emit('fill-random')"
-          :disabled="loading"
+          :disabled="loading || autoIncrement || functionCode === '0x02' || functionCode === '0x04'"
           class="flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition cursor-pointer border border-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
           :title="$t('common.randomHint')"
         >

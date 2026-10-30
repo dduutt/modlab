@@ -266,11 +266,11 @@ export const useSessionStore = defineStore('session', () => {
   function startAutoIncrement(tabId: string) {
     stopAutoIncrement(tabId);
     const tab = tabs.value.find(t => t.id === tabId);
-    if (!tab || !tab.connected) return;
+    if (!tab || !tab.connected || ['0x02', '0x04'].includes(tab.config.functionCode)) return;
 
     const timer = setInterval(async () => {
       const currentTab = tabs.value.find(t => t.id === tabId);
-      if (!currentTab || !currentTab.connected || !currentTab.autoIncrement) {
+      if (!currentTab || !currentTab.connected || !currentTab.autoIncrement || ['0x02', '0x04'].includes(currentTab.config.functionCode)) {
         stopAutoIncrement(tabId);
         return;
       }
@@ -384,6 +384,7 @@ export const useSessionStore = defineStore('session', () => {
   async function writeCell(tabId: string, address: number, value: number) {
     const tab = tabs.value.find(t => t.id === tabId);
     if (!tab || tab.busy) return;
+    if (tab.isPolling || tab.autoIncrement || ['0x02', '0x04'].includes(tab.config.functionCode)) return;
     const session = getOrCreateSession(tabId);
     const started = Date.now();
     addLog(tab, 'TX', `Write Register (Addr: ${address})`, `Val: ${value}`);
@@ -409,6 +410,7 @@ export const useSessionStore = defineStore('session', () => {
   ) {
     const tab = tabs.value.find(t => t.id === tabId);
     if (!tab || tab.busy) return;
+    if (tab.isPolling || tab.autoIncrement || ['0x02', '0x04'].includes(tab.config.functionCode)) return;
     const session = getOrCreateSession(tabId);
     const started = Date.now();
     addLog(
@@ -441,6 +443,7 @@ export const useSessionStore = defineStore('session', () => {
   async function fillRandom(tabId: string) {
     const tab = tabs.value.find(t => t.id === tabId);
     if (!tab || (!tab.connected && tab.connection.role !== 'Slave') || tab.busy) return;
+    if (tab.isPolling || tab.autoIncrement || ['0x02', '0x04'].includes(tab.config.functionCode)) return;
     const session = getOrCreateSession(tabId);
     const started = Date.now();
     addLog(
@@ -479,6 +482,8 @@ export const useSessionStore = defineStore('session', () => {
   function updateConfig(tabId: string, nextConfig: ModbusConfig) {
     const tab = tabs.value.find(t => t.id === tabId);
     if (!tab) return;
+    const minInterval = tab.connection.protocol === 'RTU' ? 100 : 20;
+    nextConfig.interval = Math.max(minInterval, nextConfig.interval);
     const oldFc = tab.config.functionCode;
     const oldUnit = tab.config.unitId;
     tab.config = nextConfig;

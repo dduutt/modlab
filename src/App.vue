@@ -53,6 +53,7 @@ const isGridWritable = computed(() => {
   const tab = activeTab.value;
   if (!tab || tab.busy) return false;
   if (['0x02', '0x04'].includes(tab.config.functionCode)) return false;
+  if (tab.autoIncrement) return false;
   if (tab.connection.role === 'Master') {
     return Boolean(tab.connected && !tab.isPolling);
   }

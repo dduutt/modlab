@@ -436,9 +436,15 @@ impl SessionActor {
             }
             SessionCommand::StartPolling(interval_ms) => {
                 if self.state == FsmState::Connected {
-                    self.poll_interval = interval_ms;
+                    let min_interval = if self.config.as_ref().map(|c| c.protocol == "RTU").unwrap_or(false) {
+                        100
+                    } else {
+                        20
+                    };
+                    let safe_interval = interval_ms.max(min_interval);
+                    self.poll_interval = safe_interval;
                     self.is_polling = true;
-                    *interval = time::interval(Duration::from_millis(interval_ms));
+                    *interval = time::interval(Duration::from_millis(safe_interval));
                     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
                 }
             }
@@ -451,7 +457,23 @@ impl SessionActor {
                 }
             }
             SessionCommand::WriteRegister(payload) => {
+                if self.is_polling {
+                    let _ = self
+                        .event_sender
+                        .send(SessionEvent::PollError("Cannot write while polling is active".into()))
+                        .await;
+                    return;
+                }
+
                 if let Some(cfg) = &self.config {
+                    if cfg.function_code == "0x02" || cfg.function_code == "0x04" {
+                        let _ = self
+                            .event_sender
+                            .send(SessionEvent::PollError(format!("Function code {} is read-only", cfg.function_code)))
+                            .await;
+                        return;
+                    }
+
                     if cfg.role == "Slave" {
                         {
                             let mut mem = self.memory.write().unwrap();
@@ -490,7 +512,23 @@ impl SessionActor {
                 }
             }
             SessionCommand::WriteRegistersBatch(batch) => {
+                if self.is_polling {
+                    let _ = self
+                        .event_sender
+                        .send(SessionEvent::PollError("Cannot write while polling is active".into()))
+                        .await;
+                    return;
+                }
+
                 if let Some(cfg) = &self.config {
+                    if cfg.function_code == "0x02" || cfg.function_code == "0x04" {
+                        let _ = self
+                            .event_sender
+                            .send(SessionEvent::PollError(format!("Function code {} is read-only", cfg.function_code)))
+                            .await;
+                        return;
+                    }
+
                     if cfg.role == "Slave" {
                         {
                             let mut mem = self.memory.write().unwrap();
@@ -745,7 +783,7 @@ mod tests {
             count: 10,
             timeout_ms: Some(1000),
         };
-        master_cmd_tx.send(SessionCommand::Connect(master_cfg)).await.unwrap();
+        master_cmd_tx.send(SessionCommand::Connect(master_cfg.clone())).await.unwrap();
 
         let evt = master_evt_rx.recv().await.unwrap();
         assert_eq!(evt, SessionEvent::StateChanged(FsmState::Connecting));
@@ -772,7 +810,23 @@ mod tests {
             other => panic!("Expected DataUpdated, got {:?}", other),
         }
 
-        // 5. Clean up
+        // 5. Test constraint: Write rejected while polling is active
+        master_cmd_tx.send(SessionCommand::StartPolling(100)).await.unwrap();
+        master_cmd_tx.send(SessionCommand::WriteRegister(WritePayload { address: 6, value: 5678 })).await.unwrap();
+        let evt = master_evt_rx.recv().await.unwrap();
+        assert_eq!(evt, SessionEvent::PollError("Cannot write while polling is active".into()));
+        master_cmd_tx.send(SessionCommand::StopPolling).await.unwrap();
+
+        // 6. Test constraint: Write rejected for read-only FC 0x04
+        master_cmd_tx.send(SessionCommand::UpdateConfig(ConnectionConfig {
+            function_code: "0x04".into(),
+            ..master_cfg
+        })).await.unwrap();
+        master_cmd_tx.send(SessionCommand::WriteRegister(WritePayload { address: 6, value: 5678 })).await.unwrap();
+        let evt = master_evt_rx.recv().await.unwrap();
+        assert_eq!(evt, SessionEvent::PollError("Function code 0x04 is read-only".into()));
+
+        // 7. Clean up
         slave_cmd_tx.send(SessionCommand::Disconnect).await.unwrap();
         master_cmd_tx.send(SessionCommand::Disconnect).await.unwrap();
     }
