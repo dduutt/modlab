@@ -116,6 +116,9 @@ pub struct WireTap<T> {
     inner: T,
     event_sender: mpsc::Sender<SessionEvent>,
     protocol: String,
+    filter_unit_id: Option<u8>,
+    rx_staging: Vec<u8>,
+    rx_delivered: Vec<u8>,
 }
 
 impl<T> WireTap<T> {
@@ -124,6 +127,20 @@ impl<T> WireTap<T> {
             inner,
             event_sender,
             protocol,
+            filter_unit_id: None,
+            rx_staging: Vec::new(),
+            rx_delivered: Vec::new(),
+        }
+    }
+
+    pub fn new_slave_tcp(inner: T, event_sender: mpsc::Sender<SessionEvent>, expected_unit_id: u8) -> Self {
+        Self {
+            inner,
+            event_sender,
+            protocol: "TCP".into(),
+            filter_unit_id: Some(expected_unit_id),
+            rx_staging: Vec::new(),
+            rx_delivered: Vec::new(),
         }
     }
 }
@@ -132,6 +149,7 @@ impl<T> fmt::Debug for WireTap<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WireTap")
             .field("protocol", &self.protocol)
+            .field("filter_unit_id", &self.filter_unit_id)
             .finish()
     }
 }
@@ -154,20 +172,86 @@ impl<T: AsyncRead + Unpin> AsyncRead for WireTap<T> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        let before = buf.filled().len();
-        let res = Pin::new(&mut self.inner).poll_read(cx, buf);
-        if let Poll::Ready(Ok(())) = &res {
-            let after = buf.filled().len();
-            if after > before {
-                let hex = bytes_to_hex(&buf.filled()[before..after]);
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+
+        let expected_unit_id = match self.filter_unit_id {
+            Some(id) => id,
+            None => {
+                let before = buf.filled().len();
+                let res = Pin::new(&mut self.inner).poll_read(cx, buf);
+                if let Poll::Ready(Ok(())) = &res {
+                    let after = buf.filled().len();
+                    if after > before {
+                        let hex = bytes_to_hex(&buf.filled()[before..after]);
+                        let _ = self.event_sender.try_send(SessionEvent::FrameLogged(FramePayload {
+                            direction: "RX".into(),
+                            bytes: hex,
+                            protocol: self.protocol.clone(),
+                        }));
+                    }
+                }
+                return res;
+            }
+        };
+
+        loop {
+            if !self.rx_delivered.is_empty() {
+                let to_take = std::cmp::min(self.rx_delivered.len(), buf.remaining());
+                if to_take > 0 {
+                    buf.put_slice(&self.rx_delivered[..to_take]);
+                    self.rx_delivered.drain(..to_take);
+                    return Poll::Ready(Ok(()));
+                }
+            }
+
+            while self.rx_staging.len() >= 6 {
+                let len_field = u16::from_be_bytes([self.rx_staging[4], self.rx_staging[5]]) as usize;
+                if len_field == 0 || len_field > 300 {
+                    self.rx_staging.remove(0);
+                    continue;
+                }
+                let total_frame_len = 6 + len_field;
+                if self.rx_staging.len() < total_frame_len {
+                    break;
+                }
+
+                let frame_bytes: Vec<u8> = self.rx_staging.drain(..total_frame_len).collect();
+                let unit_id = frame_bytes[6];
+
+                let hex = bytes_to_hex(&frame_bytes);
                 let _ = self.event_sender.try_send(SessionEvent::FrameLogged(FramePayload {
                     direction: "RX".into(),
                     bytes: hex,
                     protocol: self.protocol.clone(),
                 }));
+
+                if unit_id == expected_unit_id {
+                    self.rx_delivered.extend_from_slice(&frame_bytes);
+                    let to_take = std::cmp::min(self.rx_delivered.len(), buf.remaining());
+                    if to_take > 0 {
+                        buf.put_slice(&self.rx_delivered[..to_take]);
+                        self.rx_delivered.drain(..to_take);
+                        return Poll::Ready(Ok(()));
+                    }
+                }
+            }
+
+            let mut chunk = [0u8; 1024];
+            let mut read_buf = ReadBuf::new(&mut chunk);
+            match Pin::new(&mut self.inner).poll_read(cx, &mut read_buf) {
+                Poll::Ready(Ok(())) => {
+                    let n = read_buf.filled().len();
+                    if n == 0 {
+                        return Poll::Ready(Ok(()));
+                    }
+                    self.rx_staging.extend_from_slice(read_buf.filled());
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
             }
         }
-        res
     }
 }
 
@@ -408,7 +492,7 @@ impl SessionActor {
                     }
                 }
                 _ = poll_interval.tick(), if self.is_polling && self.state == FsmState::Connected => {
-                    self.execute_poll().await;
+                    let _ = self.execute_poll().await;
                 }
                 _ = auto_inc_interval.tick(), if self.is_auto_incrementing => {
                     self.execute_auto_increment().await;
@@ -588,10 +672,7 @@ impl SessionActor {
                 self.is_polling = false;
                 Ok(())
             }
-            SessionCommand::ReadOnce => {
-                self.execute_poll().await;
-                Ok(())
-            }
+            SessionCommand::ReadOnce => self.execute_poll().await,
             SessionCommand::WriteRegister(payload) => self.write_register(payload).await,
             SessionCommand::WriteRegistersBatch(batch) => self.write_registers_batch(batch).await,
             SessionCommand::StartAutoIncrement { interval_ms, config } => {
@@ -665,7 +746,7 @@ impl SessionActor {
                     clients: clients.clone(),
                     _guard: guard,
                 };
-                let tap = WireTap::new(stream, event_sender.clone(), "TCP".into());
+                let tap = WireTap::new_slave_tcp(stream, event_sender.clone(), unit_id);
                 ready(Ok(Some((service, tap))))
             };
             let _ = server
@@ -760,16 +841,8 @@ impl SessionActor {
         };
         match res {
             Ok(Ok(_)) => Ok(()),
-            Ok(Err(ex)) => {
-                let msg = format!("Write exception: {:?}", ex);
-                self.emit_error(&msg).await;
-                Err(msg)
-            }
-            Err(e) => {
-                let msg = format!("Write failed: {}", e);
-                self.emit_error(&msg).await;
-                Err(msg)
-            }
+            Ok(Err(ex)) => Err(format!("Write exception: {:?}", ex)),
+            Err(e) => Err(format!("Write failed: {}", e)),
         }
     }
 
@@ -786,16 +859,8 @@ impl SessionActor {
                 let res = ctx.write_single_coil(*addr, *val != 0).await;
                 match res {
                     Ok(Ok(_)) => {}
-                    Ok(Err(ex)) => {
-                        let msg = format!("Write coil exception: {:?}", ex);
-                        self.emit_error(&msg).await;
-                        return Err(msg);
-                    }
-                    Err(e) => {
-                        let msg = format!("Write coil failed: {}", e);
-                        self.emit_error(&msg).await;
-                        return Err(msg);
-                    }
+                    Ok(Err(ex)) => return Err(format!("Write coil exception: {:?}", ex)),
+                    Err(e) => return Err(format!("Write coil failed: {}", e)),
                 }
             }
             return Ok(());
@@ -810,42 +875,26 @@ impl SessionActor {
             let res = ctx.write_multiple_registers(start, &vals).await;
             match res {
                 Ok(Ok(_)) => Ok(()),
-                Ok(Err(ex)) => {
-                    let msg = format!("Write multiple registers exception: {:?}", ex);
-                    self.emit_error(&msg).await;
-                    Err(msg)
-                }
-                Err(e) => {
-                    let msg = format!("Write multiple registers failed: {}", e);
-                    self.emit_error(&msg).await;
-                    Err(msg)
-                }
+                Ok(Err(ex)) => Err(format!("Write multiple registers exception: {:?}", ex)),
+                Err(e) => Err(format!("Write multiple registers failed: {}", e)),
             }
         } else {
             for (addr, val) in &batch {
                 let res = ctx.write_single_register(*addr, *val).await;
                 match res {
                     Ok(Ok(_)) => {}
-                    Ok(Err(ex)) => {
-                        let msg = format!("Write exception: {:?}", ex);
-                        self.emit_error(&msg).await;
-                        return Err(msg);
-                    }
-                    Err(e) => {
-                        let msg = format!("Write failed: {}", e);
-                        self.emit_error(&msg).await;
-                        return Err(msg);
-                    }
+                    Ok(Err(ex)) => return Err(format!("Write exception: {:?}", ex)),
+                    Err(e) => return Err(format!("Write failed: {}", e)),
                 }
             }
             Ok(())
         }
     }
 
-    async fn execute_poll(&mut self) {
+    async fn execute_poll(&mut self) -> Result<(), String> {
         let (ctx, config) = match (&mut self.runtime, self.config.as_ref()) {
             (SessionRuntime::Master(c), Some(cfg)) => (c, cfg),
-            _ => return,
+            _ => return Err("Not connected as Master".into()),
         };
 
         let fc_normalized = config.function_code.trim();
@@ -861,8 +910,8 @@ impl SessionActor {
                 "Invalid poll range: start={}, count={} exceeds Modbus bounds (max: {})",
                 config.start_address, config.count, max_count
             );
-            let _ = self.event_sender.send(SessionEvent::PollError(err_msg)).await;
-            return;
+            let _ = self.event_sender.send(SessionEvent::PollError(err_msg.clone())).await;
+            return Err(err_msg);
         }
 
         ctx.set_slave(Slave(config.unit_id));
@@ -914,23 +963,36 @@ impl SessionActor {
         match time::timeout(timeout_dur, poll_fut).await {
             Ok(Ok(data_map)) => {
                 let _ = self.event_sender.send(SessionEvent::DataUpdated(data_map)).await;
+                Ok(())
             }
             Ok(Err(err_msg)) => {
                 let is_fatal = err_msg.contains("Broken pipe")
                     || err_msg.contains("Connection reset")
                     || err_msg.contains("Connection aborted")
-                    || err_msg.contains("not connected");
+                    || err_msg.contains("forcibly closed")
+                    || err_msg.contains("10054")
+                    || err_msg.contains("10053")
+                    || err_msg.contains("not connected")
+                    || err_msg.contains("early eof")
+                    || err_msg.contains("UnexpectedEof")
+                    || err_msg.contains("failed to fill whole buffer");
 
                 if is_fatal {
                     self.is_polling = false;
-                    self.set_state(FsmState::Error(format!("Connection lost: {}", err_msg))).await;
                     self.cleanup().await;
+                    let msg = format!("Connection lost: {}", err_msg);
+                    self.set_state(FsmState::Error(msg.clone())).await;
+                    Err(msg)
                 } else {
-                    let _ = self.event_sender.send(SessionEvent::PollError(format!("Read failed: {}", err_msg))).await;
+                    let msg = format!("Read failed: {}", err_msg);
+                    let _ = self.event_sender.send(SessionEvent::PollError(msg.clone())).await;
+                    Err(msg)
                 }
             }
             Err(_) => {
-                let _ = self.event_sender.send(SessionEvent::PollError(format!("Read timeout ({}ms)", timeout_dur.as_millis()))).await;
+                let msg = format!("Read timeout ({}ms)", timeout_dur.as_millis());
+                let _ = self.event_sender.send(SessionEvent::PollError(msg.clone())).await;
+                Err(msg)
             }
         }
     }
@@ -1459,5 +1521,277 @@ mod tests {
         assert_eq!(evt, SessionEvent::PollError("Function code 0x04 is read-only".into()));
 
         send_cmd(&slave_cmd_tx, SessionCommand::Disconnect).await;
+    }
+
+    #[tokio::test]
+    async fn test_slave_strict_unit_id_filtering() {
+        let slave_clients = Arc::new(RwLock::new(HashMap::new()));
+        let (slave_cmd_tx, slave_cmd_rx) = mpsc::channel(32);
+        let (slave_evt_tx, mut slave_evt_rx) = mpsc::channel(32);
+        let slave_actor = SessionActor::new("slave_filter_test".into(), slave_cmd_rx, slave_evt_tx, slave_clients);
+        tokio::spawn(slave_actor.run());
+
+        // 1. Connect Slave to 127.0.0.1:15024 with Unit ID = 1
+        let slave_cfg = ConnectionConfig {
+            protocol: "TCP".into(),
+            ip: "127.0.0.1".into(),
+            port: 15024,
+            serial_port: "".into(),
+            baud_rate: 9600,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "None".into(),
+            role: "Slave".into(),
+            unit_id: 1,
+            function_code: "0x03".into(),
+            start_address: 0,
+            count: 10,
+            timeout_ms: Some(1000),
+        };
+        send_cmd(&slave_cmd_tx, SessionCommand::Connect(slave_cfg)).await;
+        let _ = slave_evt_rx.recv().await.unwrap(); // Connecting
+        let _ = slave_evt_rx.recv().await.unwrap(); // Connected
+
+        // 2. Connect Master to 127.0.0.1:15024 with Unit ID = 1
+        let master_clients = Arc::new(RwLock::new(HashMap::new()));
+        let (master_cmd_tx, master_cmd_rx) = mpsc::channel(32);
+        let (master_evt_tx, mut master_evt_rx) = mpsc::channel(32);
+        let master_actor = SessionActor::new("master_filter_test".into(), master_cmd_rx, master_evt_tx, master_clients);
+        tokio::spawn(master_actor.run());
+
+        let mut master_cfg = ConnectionConfig {
+            protocol: "TCP".into(),
+            ip: "127.0.0.1".into(),
+            port: 15024,
+            serial_port: "".into(),
+            baud_rate: 9600,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "None".into(),
+            role: "Master".into(),
+            unit_id: 1,
+            function_code: "0x03".into(),
+            start_address: 0,
+            count: 10,
+            timeout_ms: Some(300),
+        };
+        send_cmd(&master_cmd_tx, SessionCommand::Connect(master_cfg.clone())).await;
+        let _ = master_evt_rx.recv().await.unwrap(); // Connecting
+        let _ = master_evt_rx.recv().await.unwrap(); // Connected
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // 3. Master writes register 0 = 999 with Unit ID = 1 -> Should succeed
+        send_cmd(&master_cmd_tx, SessionCommand::WriteRegister(WritePayload { address: 0, value: 999 })).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // 4. Master reads with matching Unit ID = 1 -> Should succeed and return value 999
+        send_cmd(&master_cmd_tx, SessionCommand::ReadOnce).await;
+        let mut got_value = None;
+        while let Ok(Some(evt)) = tokio::time::timeout(Duration::from_millis(500), master_evt_rx.recv()).await {
+            if let SessionEvent::DataUpdated(map) = evt {
+                got_value = map.get(&0).copied();
+                break;
+            }
+        }
+        assert_eq!(got_value, Some(999));
+
+        // 5. Master switches Unit ID to 2 (mismatched)
+        master_cfg.unit_id = 2;
+        send_cmd(&master_cmd_tx, SessionCommand::UpdateConfig(master_cfg.clone())).await;
+
+        // 6. Master reads with Unit ID = 2 -> Slave drops packet -> Master times out!
+        send_cmd(&master_cmd_tx, SessionCommand::ReadOnce).await;
+        let mut got_timeout = false;
+        while let Ok(Some(evt)) = tokio::time::timeout(Duration::from_millis(800), master_evt_rx.recv()).await {
+            if let SessionEvent::PollError(msg) = evt {
+                if msg.contains("Read timeout") {
+                    got_timeout = true;
+                    break;
+                }
+            }
+        }
+        assert!(got_timeout, "Expected Read timeout when Master polls with mismatched Unit ID");
+
+        // 7. Master switches Unit ID back to 1 (matching)
+        master_cfg.unit_id = 1;
+        send_cmd(&master_cmd_tx, SessionCommand::UpdateConfig(master_cfg.clone())).await;
+
+        // 8. Master reads with Unit ID = 1 -> Restored and succeeds!
+        send_cmd(&master_cmd_tx, SessionCommand::ReadOnce).await;
+        let mut restored_value = None;
+        while let Ok(Some(evt)) = tokio::time::timeout(Duration::from_millis(500), master_evt_rx.recv()).await {
+            if let SessionEvent::DataUpdated(map) = evt {
+                restored_value = map.get(&0).copied();
+                break;
+            }
+        }
+        assert_eq!(restored_value, Some(999));
+
+        // Cleanup
+        send_cmd(&slave_cmd_tx, SessionCommand::Disconnect).await;
+        send_cmd(&master_cmd_tx, SessionCommand::Disconnect).await;
+    }
+
+    #[tokio::test]
+    async fn test_master_read_once_returns_error_on_slave_close() {
+        let slave_clients = Arc::new(RwLock::new(HashMap::new()));
+        let (slave_cmd_tx, slave_cmd_rx) = mpsc::channel(32);
+        let (slave_evt_tx, mut slave_evt_rx) = mpsc::channel(32);
+        let slave_actor = SessionActor::new("slave_ro_err_test".into(), slave_cmd_rx, slave_evt_tx, slave_clients);
+        tokio::spawn(slave_actor.run());
+
+        let slave_cfg = ConnectionConfig {
+            protocol: "TCP".into(),
+            ip: "127.0.0.1".into(),
+            port: 15027,
+            serial_port: "".into(),
+            baud_rate: 9600,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "None".into(),
+            role: "Slave".into(),
+            unit_id: 1,
+            function_code: "0x03".into(),
+            start_address: 0,
+            count: 10,
+            timeout_ms: Some(1000),
+        };
+        send_cmd(&slave_cmd_tx, SessionCommand::Connect(slave_cfg)).await;
+        let _ = slave_evt_rx.recv().await.unwrap();
+        let _ = slave_evt_rx.recv().await.unwrap();
+
+        let master_clients = Arc::new(RwLock::new(HashMap::new()));
+        let (master_cmd_tx, master_cmd_rx) = mpsc::channel(32);
+        let (master_evt_tx, mut master_evt_rx) = mpsc::channel(32);
+        let master_actor = SessionActor::new("master_ro_err_test".into(), master_cmd_rx, master_evt_tx, master_clients);
+        tokio::spawn(master_actor.run());
+
+        let master_cfg = ConnectionConfig {
+            protocol: "TCP".into(),
+            ip: "127.0.0.1".into(),
+            port: 15027,
+            serial_port: "".into(),
+            baud_rate: 9600,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "None".into(),
+            role: "Master".into(),
+            unit_id: 1,
+            function_code: "0x03".into(),
+            start_address: 0,
+            count: 10,
+            timeout_ms: Some(300),
+        };
+        send_cmd(&master_cmd_tx, SessionCommand::Connect(master_cfg)).await;
+        let _ = master_evt_rx.recv().await.unwrap();
+        let _ = master_evt_rx.recv().await.unwrap();
+
+        // 1. Initial ReadOnce succeeds
+        let (resp_tx1, resp_rx1) = tokio::sync::oneshot::channel();
+        master_cmd_tx.send(CommandEnvelope { cmd: SessionCommand::ReadOnce, resp: Some(resp_tx1) }).await.unwrap();
+        let res1 = resp_rx1.await.unwrap();
+        assert!(res1.is_ok(), "Initial ReadOnce should succeed");
+
+        // 2. Slave closes connection
+        send_cmd(&slave_cmd_tx, SessionCommand::Disconnect).await;
+
+        // 3. Master ReadOnce must return Err with connection loss
+        let (resp_tx2, resp_rx2) = tokio::sync::oneshot::channel();
+        master_cmd_tx.send(CommandEnvelope { cmd: SessionCommand::ReadOnce, resp: Some(resp_tx2) }).await.unwrap();
+        let res2 = resp_rx2.await.unwrap();
+        assert!(res2.is_err(), "ReadOnce must return Err after slave terminates");
+        let err_msg = res2.unwrap_err();
+        assert!(err_msg.contains("Connection lost"), "Error should indicate Connection lost: {}", err_msg);
+
+        // Cleanup
+        send_cmd(&master_cmd_tx, SessionCommand::Disconnect).await;
+    }
+
+    #[tokio::test]
+    async fn test_master_auto_disconnect_on_slave_close() {
+        let slave_clients = Arc::new(RwLock::new(HashMap::new()));
+        let (slave_cmd_tx, slave_cmd_rx) = mpsc::channel(32);
+        let (slave_evt_tx, mut slave_evt_rx) = mpsc::channel(32);
+        let slave_actor = SessionActor::new("slave_disc_test".into(), slave_cmd_rx, slave_evt_tx, slave_clients);
+        tokio::spawn(slave_actor.run());
+
+        // 1. Connect Slave to 127.0.0.1:15026
+        let slave_cfg = ConnectionConfig {
+            protocol: "TCP".into(),
+            ip: "127.0.0.1".into(),
+            port: 15026,
+            serial_port: "".into(),
+            baud_rate: 9600,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "None".into(),
+            role: "Slave".into(),
+            unit_id: 1,
+            function_code: "0x03".into(),
+            start_address: 0,
+            count: 10,
+            timeout_ms: Some(1000),
+        };
+        send_cmd(&slave_cmd_tx, SessionCommand::Connect(slave_cfg)).await;
+        let _ = slave_evt_rx.recv().await.unwrap(); // Connecting
+        let _ = slave_evt_rx.recv().await.unwrap(); // Connected
+
+        // 2. Connect Master to 127.0.0.1:15026 and start polling
+        let master_clients = Arc::new(RwLock::new(HashMap::new()));
+        let (master_cmd_tx, master_cmd_rx) = mpsc::channel(32);
+        let (master_evt_tx, mut master_evt_rx) = mpsc::channel(32);
+        let master_actor = SessionActor::new("master_disc_test".into(), master_cmd_rx, master_evt_tx, master_clients);
+        tokio::spawn(master_actor.run());
+
+        let master_cfg = ConnectionConfig {
+            protocol: "TCP".into(),
+            ip: "127.0.0.1".into(),
+            port: 15026,
+            serial_port: "".into(),
+            baud_rate: 9600,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "None".into(),
+            role: "Master".into(),
+            unit_id: 1,
+            function_code: "0x03".into(),
+            start_address: 0,
+            count: 10,
+            timeout_ms: Some(300),
+        };
+        send_cmd(&master_cmd_tx, SessionCommand::Connect(master_cfg)).await;
+        let _ = master_evt_rx.recv().await.unwrap(); // Connecting
+        let _ = master_evt_rx.recv().await.unwrap(); // Connected
+
+        send_cmd(&master_cmd_tx, SessionCommand::StartPolling(50)).await;
+
+        // Drain first successful data update
+        let mut got_data = false;
+        while let Ok(Some(evt)) = tokio::time::timeout(Duration::from_millis(500), master_evt_rx.recv()).await {
+            if let SessionEvent::DataUpdated(_) = evt {
+                got_data = true;
+                break;
+            }
+        }
+        assert!(got_data, "Master should receive initial data from Slave");
+
+        // 3. Slave closes connection
+        send_cmd(&slave_cmd_tx, SessionCommand::Disconnect).await;
+
+        // 4. Master should detect socket close on next poll tick and transition to Error state
+        let mut got_error = false;
+        while let Ok(Some(evt)) = tokio::time::timeout(Duration::from_millis(1500), master_evt_rx.recv()).await {
+            if let SessionEvent::StateChanged(FsmState::Error(msg)) = evt {
+                if msg.contains("Connection lost") {
+                    got_error = true;
+                    break;
+                }
+            }
+        }
+        assert!(got_error, "Master must transition to Error state when Slave terminates");
+
+        // Cleanup
+        send_cmd(&master_cmd_tx, SessionCommand::Disconnect).await;
     }
 }

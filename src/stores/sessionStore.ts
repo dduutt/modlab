@@ -235,8 +235,8 @@ export const useSessionStore = defineStore('session', () => {
           const target = findTab(tabId);
           if (!target) return;
           target.statusType = 'error';
-          target.statusMessage = `[${target.title}] Operation failed: ${err}`;
-          addLog(target, 'RX', 'Operation Failed', err);
+          target.statusMessage = `[${target.title}] Poll error: ${err}`;
+          addLog(target, 'RX', 'Poll Error', err);
         },
         onFrameLogged: (frame) => {
           const target = findTab(tabId);
@@ -353,13 +353,26 @@ export const useSessionStore = defineStore('session', () => {
     const tab = findTab(tabId);
     if (!tab || !tab.connected || tab.busy || tab.isPolling) return;
     const session = getOrCreateSession(tabId);
+    const started = Date.now();
+    tab.busy = true;
     addLog(
       tab,
       'TX',
       `Read (${tab.config.functionCode}) Req`,
       `Unit: ${tab.config.unitId}, Start: ${tab.config.startAddress}, Count: ${tab.config.count}`
     );
-    await session.readOnce();
+    try {
+      await session.readOnce();
+      tab.statusMessage = `[${tab.title}] Read completed.`;
+      tab.statusType = 'success';
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      tab.statusMessage = `[${tab.title}] Read failed: ${msg}`;
+      tab.statusType = 'error';
+      addLog(tab, 'RX', 'Read Failed', msg, false, started);
+    } finally {
+      tab.busy = false;
+    }
   }
 
   async function writeCell(tabId: string, address: number, value: number) {
@@ -419,9 +432,10 @@ export const useSessionStore = defineStore('session', () => {
         started
       );
     } catch (err: any) {
-      tab.statusMessage = `[${tab.title}] Write pair failed: ${err?.message || err}`;
+      const msg = err?.message || String(err);
+      tab.statusMessage = `[${tab.title}] Write pair failed: ${msg}`;
       tab.statusType = 'error';
-      addLog(tab, 'RX', 'Write Pair Failed', String(err), false, started);
+      addLog(tab, 'RX', 'Write Pair Failed', msg, false, started);
     } finally {
       tab.busy = false;
     }
