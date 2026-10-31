@@ -225,7 +225,7 @@ export const useSessionStore = defineStore('session', () => {
           const target = findTab(tabId);
           if (!target) return;
           target.values = { ...target.values, ...data };
-          if (target.statusType === 'error' && target.statusMessage.includes('failed')) {
+          if (target.statusType === 'error') {
             target.statusType = 'success';
             target.statusMessage = `[${target.title}] Communication restored.`;
             addLog(target, 'RX', 'Communication restored', '');
