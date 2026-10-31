@@ -1,7 +1,3 @@
-import { ModbusService } from '../services/modbusService';
-import { appendLog } from './logging';
-import { generateRandomRegisters, incrementFormattedValue } from './modbusFormatter';
-
 declare const activeTab: any;
 declare const tabToCloseId: any;
 declare const showConfirmModal: any;

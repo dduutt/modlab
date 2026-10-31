@@ -5,7 +5,7 @@ import ts from 'typescript';
 
 // Exercise the actual setup handlers with deferred IPC responses, without
 // starting a Tauri webview or replacing their implementation with a test copy.
-const script = readFileSync(new URL('../src/utils/legacyHandlers.ts', import.meta.url), 'utf8');
+const script = readFileSync(new URL('./legacyHandlers.ts', import.meta.url), 'utf8');
 const component = '';
 // legacy script
 const source = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true);

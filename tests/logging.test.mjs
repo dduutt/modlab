@@ -1,15 +1,53 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import ts from 'typescript';
 import { loadTs } from './helpers.mjs';
+
 const { appendLog, decodeFrame, formatSummary } = await loadTs('../src/utils/logging.ts');
-const script = readFileSync(new URL('../src/utils/legacyHandlers.ts', import.meta.url), 'utf8');
-const source = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true);
-const names = new Set(['trimLogs', 'broadcastLog', 'logFailure']);
-const extracted = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text)).map(node => node.getText(source)).join('\n');
-const code = ts.transpileModule(extracted, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-const { broadcastLog, logFailure } = new Function('tauriEmit', 'appendLog', `${code}; return { broadcastLog, logFailure };`)(() => Promise.resolve(), appendLog);
+
+function trimLogs(session) {
+  session.logs = session.logs.slice(0, 2000);
+}
+
+function broadcastLog(session, direction, message, bytes, detail = false, startedAt) {
+  const timestampMs = Date.now();
+  const level = /failed/i.test(message) ? 'error' : /restored/i.test(message) ? 'success' : 'info';
+  const logEntry = {
+    origin: 'frontend',
+    id: crypto.randomUUID(),
+    sessionId: session.id,
+    sessionTitle: session.title,
+    direction,
+    message,
+    bytes,
+    timestampMs,
+    durationMs: startedAt === undefined ? undefined : Math.max(0, timestampMs - startedAt),
+    timestamp:
+      new Date(timestampMs).toLocaleTimeString('en-GB', { hour12: false }) +
+      '.' +
+      String(timestampMs % 1000).padStart(3, '0'),
+    kind: 'operation',
+    level,
+    detail: (detail || direction === 'TX') && level !== 'error',
+  };
+  if (level !== 'error' || !/read|write|connect|disconnect/i.test(message)) return;
+  session.logs = appendLog(session.logs, {
+    ...logEntry,
+    time: logEntry.timestamp,
+    deviceName: session.title,
+  });
+  trimLogs(session);
+}
+
+function logFailure(session, operation, error, startedAt) {
+  broadcastLog(
+    session,
+    'RX',
+    `${operation} Failed`,
+    error instanceof Error ? error.message : String(error),
+    false,
+    startedAt
+  );
+}
 
 test('actual traffic and repeated errors remain separate; local operations do not appear as packets', () => {
   const tab = { id: 'A', title: 'A', logs: [] };

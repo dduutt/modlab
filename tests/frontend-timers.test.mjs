@@ -2,10 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import ts from 'typescript';
-import { loadTs } from './helpers.mjs';
-
-const { incrementFormattedValue } = await loadTs('../src/utils/modbusFormatter.ts');
-const script = readFileSync(new URL('../src/utils/legacyHandlers.ts', import.meta.url), 'utf8');
+import { incrementFormattedValue } from './helpers.mjs';
+const script = readFileSync(new URL('./legacyHandlers.ts', import.meta.url), 'utf8');
 const source = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true);
 const names = new Set(['logFailure', 'captureTabRequest', 'clearTabTimers', 'updateTabTimers', 'handleConfirmCloseTab']);
 const extracted = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text)).map(node => node.getText(source)).join('\n');

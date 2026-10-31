@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadTs } from './helpers.mjs';
+import { loadTs, incrementFormattedValue } from './helpers.mjs';
 
-const { formatRegisterValue, parseFormattedRegisterValue, incrementFormattedValue } = await loadTs('../src/utils/modbusFormatter.ts');
+const { formatRegisterValue, parseFormattedRegisterValue } = await loadTs('../src/utils/modbusFormatter.ts');
 const { connectionError } = await loadTs('../src/utils/configValidation.ts');
 
 for (const type of ['Int32', 'UInt32', 'Float32']) {
